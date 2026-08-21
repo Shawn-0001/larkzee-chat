@@ -4,6 +4,8 @@ Larkzee Chat 是一个面向 Windows 局域网的轻量点对点聊天工具。�
 
 聊天消息只存在于当前进程内存和聊天窗口中，关闭程序后立即清空，不会写入配置文件或日志。为避免长时间连续运行导致界面控件无限增长，当前窗口最多保留最近 24 小时、500 条且累计 100,000 个字符以内的消息；任一上限触发后会从最旧消息开始清理。
 
+当聊天窗口不在前台时，新收到的消息会让 Windows 任务栏按钮持续闪动；切回聊天窗口后自动停止，不会弹出打断操作的提示框。
+
 ## 首次使用
 
 1. 两台电脑分别运行 `LarkzeeChat.exe`。
@@ -37,8 +39,11 @@ bin\Release\net8.0-windows\win-x64\publish\LarkzeeChat.exe
 
 仓库中的可分发文件有两种，请不要混用：
 
-- `dist\LarkzeeChat-v1.0.0-win-x64.zip`：推荐拷贝到其他电脑使用；解压后只有一个 EXE，已经包含 .NET 8 Desktop Runtime，ZIP 约 66 MB（63.2 MiB）。
-- `dist\LarkzeeChat-v1.0.0-win-x64-lite\LarkzeeChat.exe`：约 275 KB，只适合已经安装 .NET 8 Desktop Runtime x64 的电脑；裸机双击可能无法启动。
+- `dist\LarkzeeChat-v1.0.1-win-x64\LarkzeeChat.exe`：推荐拷贝到其他电脑使用；已经包含 .NET 8 Desktop Runtime，目标电脑无需另行安装运行环境。
+- `dist\LarkzeeChat-v1.0.1-win-x64-lite\LarkzeeChat.exe`：小体积版本，只适合已经安装 .NET 8 Desktop Runtime x64 的电脑；裸机双击可能无法启动。
+- 两个目录中的 `LarkzeeChat.exe.md5` 分别记录对应 EXE 的 MD5，复制后可用于完整性核对。
+
+`dist/` 是本地发布输出目录，已从 Git 跟踪中排除。
 
 ## 本地冒烟测试
 

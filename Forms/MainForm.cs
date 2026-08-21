@@ -69,6 +69,7 @@ public sealed class MainForm : Form
         _messageInput.TextChanged += (_, _) => UpdateMessageInputScrollBars();
         _messageInput.Resize += (_, _) => UpdateMessageInputScrollBars();
         _messageList.ViewportLayoutChanged += MessageList_ViewportLayoutChanged;
+        Activated += (_, _) => TaskbarNotificationService.Stop(this);
 
         _retentionTimer = new System.Windows.Forms.Timer
         {
@@ -86,7 +87,11 @@ public sealed class MainForm : Form
             // The protocol timestamp is display-only. Retention always uses
             // the local receipt time captured by AddMessage.
             string timestamp = args.Timestamp.ToLocalTime().ToString("HH:mm");
-            RunOnUi(() => AddMessage(args.Text, timestamp, isOwnMessage: false));
+            RunOnUi(() =>
+            {
+                AddMessage(args.Text, timestamp, isOwnMessage: false);
+                TaskbarNotificationService.FlashUntilForeground(this);
+            });
         };
 
         ApplyConnectionState(_sessionManager.IsConnected);
