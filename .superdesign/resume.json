@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "targets": {
+    "main-window": {
+      "targetKind": "existing-ui",
+      "projectId": "241c535d-43a3-4540-a307-0f27af97ead4",
+      "baselineDraftId": "2bc21349-1f2a-4587-a179-1698d2db07f1",
+      "activeDraftId": "2bc21349-1f2a-4587-a179-1698d2db07f1",
+      "designSystemPath": ".superdesign/design-system.md",
+      "referenceIds": [
+        "a9a8dbb9-5670-4eac-a9f8-ba379426305a",
+        "7d2ef8f5-a9d3-4c53-9b8b-8e5d12f1e550",
+        "ec2fe823-ac3c-4e9d-947c-c29db26ac13a"
+      ],
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "Forms/MainForm.cs",
+        "Controls/ChatMessageControl.cs",
+        "Controls/RoundedBorderPanel.cs",
+        "Controls/BufferedFlowLayoutPanel.cs",
+        ".superdesign/init/theme.md"
+      ],
+      "fingerprints": {
+        ".superdesign/design-system.md": "69a0dc8963303ca23771e82ae8d26b911bc9c5c48d41ab383a8c7f3ee40a1daf",
+        "Forms/MainForm.cs": "a11e2a188c72b0e25294ff4ae20c75ba7d92d321c34f4e904670c73a01d9d5d9",
+        "Controls/ChatMessageControl.cs": "b1d8de0aa55f2621505d6aaaf0967f8f9a738248e0833054446929da7764ed40",
+        "Controls/RoundedBorderPanel.cs": "884fbe6bc7f1fbd0a2d1cc20ac2f5c0fc346ca334ec782e074f4815f8f9cf3a7",
+        "Controls/BufferedFlowLayoutPanel.cs": "79bea6ad55c69f4ca0ba4d43d96f76f36cb9cfd825f1d6bbace83ed8655d3366",
+        ".superdesign/init/theme.md": "5de0e02cf85cf07a9060af19f123576f12d6b6c2a70ca2aab206c1e78b7f6240"
+      },
+      "components": [
+        {
+          "name": "ChatHeader",
+          "id": "d96ec1c1-837a-4995-8d1e-02430543b632",
+          "sourcePath": "Forms/MainForm.cs"
+        },
+        {
+          "name": "MessageComposer",
+          "id": "1008ceae-2164-434c-9bb7-c4cc8d7f4e44",
+          "sourcePath": "Forms/MainForm.cs"
+        }
+      ],
+      "drafts": {
+        "2bc21349-1f2a-4587-a179-1698d2db07f1": {
+          "title": "Polished Native Main Window",
+          "visualDirection": "restrained Windows-native light UI with draw-only rounded bubbles and a WeChat-like bottom-right send composer",
+          "currentVersion": 3
+        }
+      },
+      "updatedAt": "2026-08-21T08:03:24Z"
+    }
+  }
+}
