@@ -44,6 +44,8 @@ internal sealed class SmokeSuite
         Console.WriteLine("Larkzee Chat localhost smoke tests");
         Console.WriteLine($"Target: 127.0.0.1:{Port}");
 
+        await RunCaseAsync("8-character connection codes", TestConnectionCodeAsync);
+        await RunCaseAsync("connection code listener integration", TestConnectionCodeListenerAsync);
         await RunCaseAsync("initial state, listener enable, and disable", TestInitialStateAndListenerAsync);
         await RunCaseAsync("initial main-window state", TestInitialMainWindowStateAsync);
         await RunCaseAsync("main-window visual structure and bounded bubbles", TestMainWindowVisualStructureAsync);
@@ -67,6 +69,146 @@ internal sealed class SmokeSuite
         Console.WriteLine();
         Console.WriteLine($"Summary: {_passed} passed, {_failures.Count} failed.");
         return _failures.Count == 0 ? 0 : 1;
+    }
+
+    private static Task TestConnectionCodeAsync()
+    {
+        IPAddress[] boundaryAddresses =
+        [
+            IPAddress.Parse("10.0.0.0"),
+            IPAddress.Parse("10.255.255.255"),
+            IPAddress.Parse("172.16.0.0"),
+            IPAddress.Parse("172.31.255.255"),
+            IPAddress.Parse("192.168.0.0"),
+            IPAddress.Parse("192.168.255.255")
+        ];
+
+        foreach (IPAddress address in boundaryAddresses)
+        {
+            ConnectionCodeInfo generated = ConnectionCodeService.Generate(address);
+            Assert(generated.Code.Length == ConnectionCodeService.CodeLength,
+                "generated connection code must have eight symbols");
+            Assert(generated.Code.All(character => ConnectionCodeService.Alphabet.Contains(character)),
+                "generated connection code must use the approved alphabet");
+            Assert(generated.Pin is >= 0 and < ConnectionCodeService.PinLimit,
+                "generated connection code PIN must be three decimal digits");
+            Assert(ConnectionCodeService.TryDecode(
+                    generated.Code,
+                    out ConnectionCodeInfo decoded,
+                    out ConnectionCodeFailureReason failureReason),
+                $"boundary code must decode, got {failureReason}");
+            Assert(decoded.Address.Equals(address), "connection code must round-trip its private IPv4 address");
+            Assert(decoded.Pin == generated.Pin, "connection code must round-trip its PIN");
+            Assert(decoded.AuthenticationPassword == generated.AuthenticationPassword,
+                "decoded connection code must derive the same authentication password");
+            Assert(ConnectionCodeService.DeriveAuthenticationPassword(generated.Code)
+                    == ConnectionCodeService.DeriveAuthenticationPassword(generated.Code.ToUpperInvariant()),
+                "password derivation must be stable under code normalization");
+
+            for (int position = 0; position < generated.Code.Length; position++)
+            {
+                char original = generated.Code[position];
+                foreach (char replacement in ConnectionCodeService.Alphabet.Where(character => character != original))
+                {
+                    string mutated = ReplaceCharacter(generated.Code, position, replacement);
+                    Assert(!ConnectionCodeService.TryDecode(mutated, out _, out _),
+                        $"one-character mutation at position {position} to '{replacement}' must be rejected");
+                }
+            }
+
+            if (generated.Code[0] != generated.Code[1])
+            {
+                string transposed = ReplaceCharacter(
+                    ReplaceCharacter(generated.Code, 0, generated.Code[1]),
+                    1,
+                    generated.Code[0]);
+                Assert(!ConnectionCodeService.TryDecode(transposed, out _, out _),
+                    "transposition of unequal symbols must be rejected");
+            }
+        }
+
+        Assert(ConnectionCodeService.TryDecode("aaaaaaaa", out ConnectionCodeInfo zeroBoundary, out _)
+            && zeroBoundary.Address.Equals(IPAddress.Parse("10.0.0.0"))
+            && zeroBoundary.Pin == 0,
+            "the all-zero payload must represent 10.0.0.0 with PIN 000");
+        Assert(!ConnectionCodeService.TryDecode("aaaaaaab", out _, out _),
+            "a checksum-invalid near-zero code must not decode");
+        Assert(!ConnectionCodeService.TryDecode("19216800", out _, out _),
+            "a code containing excluded/delimiter characters must not decode");
+        Assert(!ConnectionCodeService.TryGenerate(
+                IPAddress.Parse("8.8.8.8"),
+                out _,
+                out ConnectionCodeFailureReason publicAddressReason)
+            && publicAddressReason == ConnectionCodeFailureReason.UnsupportedAddress,
+            "public IPv4 addresses must not generate connection codes");
+
+        IReadOnlyList<byte> powerCycle = ConnectionCodeService.Gf32PowerCycle;
+        Assert(powerCycle.Count == 31 && powerCycle.Distinct().Count() == 31 && powerCycle[0] == 1,
+            "GF(32) primitive element must visit all 31 non-zero values");
+        Assert(ConnectionCodeService.IsValidGf32PrimitiveElement(2),
+            "GF(32) element 2 must be primitive under the approved polynomial");
+
+        IReadOnlyList<LocalNetworkAddressCandidate> localCandidates =
+            LocalNetworkAddressService.GetCandidates();
+        Assert(localCandidates.Select(candidate => candidate.Address.ToString()).Distinct().Count()
+                == localCandidates.Count,
+            "local network address candidates must be deduplicated");
+        if (localCandidates.Count > 0)
+        {
+            Assert(LocalNetworkAddressService.TryGetPreferredAddress(out LocalNetworkAddressCandidate preferred)
+                && preferred.Address.Equals(localCandidates[0].Address),
+                "the preferred local network address must be the first deterministically sorted candidate");
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static string ReplaceCharacter(string value, int position, char replacement)
+    {
+        char[] characters = value.ToCharArray();
+        characters[position] = replacement;
+        return new string(characters);
+    }
+
+    private static async Task TestConnectionCodeListenerAsync()
+    {
+        ChatSessionManager? server = null;
+        ChatSessionManager? client = null;
+        try
+        {
+            server = new ChatSessionManager();
+            ConnectionCodeInfo generated = ConnectionCodeService.Generate(IPAddress.Parse("10.0.0.1"));
+            Assert(server.SetConnectionCode(generated.Code), "manager must accept a valid connection code");
+            Assert(server.LocalConnectionCode is null,
+                "a disabled listener must not expose a configured connection code");
+            Assert(server.LocalPassword == generated.AuthenticationPassword,
+                "manager must atomically configure the derived password");
+
+            ServerStartResult start = await EnableAsyncWithExistingPassword(server).ConfigureAwait(false);
+            Assert(start.Succeeded, "connection-code listener must start");
+            Assert(server.LocalConnectionCode == generated.Code,
+                "an enabled listener must expose its current connection code");
+            Assert(server.LocalConnectionKey == generated.AuthenticationPassword,
+                "listener authentication must use the connection-code-derived password");
+
+            client = new ChatSessionManager();
+            ConnectResult connection = await ConnectAsync(client, generated.AuthenticationPassword)
+                .ConfigureAwait(false);
+            Assert(connection.Succeeded, "a client using the derived password must authenticate");
+
+            await DisableAsync(server).ConfigureAwait(false);
+            Assert(server.LocalConnectionCode is null,
+                "disabling the listener must clear the stale active connection code");
+        }
+        finally
+        {
+            await DisposeGroupAsync(client, server).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task<ServerStartResult> EnableAsyncWithExistingPassword(ChatSessionManager manager)
+    {
+        return await WithTimeout(manager.EnableServerAsync(), "EnableServerAsync").ConfigureAwait(false);
     }
 
     private async Task RunCaseAsync(string name, Func<Task> test)
@@ -554,11 +696,13 @@ internal sealed class SmokeSuite
         try
         {
             var service = new SettingsService(settingsPath);
+            string remoteConnectionCode = ConnectionCodeService.Generate(IPAddress.Parse("192.168.1.100")).Code;
             var settings = new AppSettings
             {
                 RemoteIp = "192.168.1.100",
                 LocalPassword = TestPassword,
-                RemotePassword = ChangedTestPassword
+                RemotePassword = ChangedTestPassword,
+                RemoteConnectionCode = remoteConnectionCode
             };
 
             Assert(service.Save(settings), "settings save must succeed in a writable local directory");
@@ -566,22 +710,39 @@ internal sealed class SmokeSuite
             Assert(json.Contains("192.168.1.100", StringComparison.Ordinal), "peer IP must be persisted");
             Assert(!json.Contains(settings.LocalPassword, StringComparison.Ordinal), "local password must never be persisted in plaintext");
             Assert(!json.Contains(settings.RemotePassword, StringComparison.Ordinal), "peer password must never be persisted in plaintext");
+            Assert(!json.Contains(settings.RemoteConnectionCode, StringComparison.Ordinal), "connection code must never be persisted in plaintext");
             Assert(json.Contains("LocalPasswordProtected", StringComparison.Ordinal), "protected local password field must be persisted");
             Assert(json.Contains("RemotePasswordProtected", StringComparison.Ordinal), "protected peer password field must be persisted");
+            Assert(json.Contains("RemoteConnectionCodeProtected", StringComparison.Ordinal), "protected connection code field must be persisted");
 
             AppSettings loaded = service.Load();
             Assert(loaded.RemoteIp == settings.RemoteIp, "persisted peer IP must round-trip");
             Assert(loaded.LocalPassword == settings.LocalPassword, "local password must round-trip through DPAPI");
             Assert(loaded.RemotePassword == settings.RemotePassword, "peer password must round-trip through DPAPI");
+            Assert(loaded.RemoteConnectionCode == settings.RemoteConnectionCode, "connection code must round-trip through DPAPI");
+
+            var codeOnly = new AppSettings { RemoteConnectionCode = remoteConnectionCode };
+            Assert(service.Save(codeOnly), "code-only settings save must succeed");
+            AppSettings codeOnlyLoaded = service.Load();
+            Assert(codeOnlyLoaded.RemoteIp == "192.168.1.100",
+                "a valid persisted connection code must restore the peer IP");
+            Assert(codeOnlyLoaded.RemotePassword
+                    == ConnectionCodeService.DeriveAuthenticationPassword(remoteConnectionCode),
+                "a valid persisted connection code must restore its derived peer password");
+
+            Assert(service.Save(settings), "settings must be restorable before corruption checks");
+            json = File.ReadAllText(settingsPath);
 
             var persisted = JsonSerializer.Deserialize<Dictionary<string, string?>>(json)
                 ?? throw new InvalidOperationException("protected settings JSON could not be parsed");
             persisted["LocalPasswordProtected"] = "not-base64";
+            persisted["RemoteConnectionCodeProtected"] = "not-base64";
             File.WriteAllText(settingsPath, JsonSerializer.Serialize(persisted));
             AppSettings corruptedSecret = service.Load();
             Assert(corruptedSecret.RemoteIp == settings.RemoteIp, "corrupted secret must preserve the valid peer IP");
             Assert(string.IsNullOrEmpty(corruptedSecret.LocalPassword), "corrupted protected secret must fail closed");
             Assert(corruptedSecret.RemotePassword == settings.RemotePassword, "independently valid protected secret must survive corruption of the other");
+            Assert(string.IsNullOrEmpty(corruptedSecret.RemoteConnectionCode), "corrupted protected connection code must fail closed");
 
             File.WriteAllText(settingsPath, "{ malformed json");
             AppSettings fallback = service.Load();

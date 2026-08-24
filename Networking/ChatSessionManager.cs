@@ -10,6 +10,7 @@ using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using LarkzeeChat.Models;
+using LarkzeeChat.Services;
 
 namespace LarkzeeChat.Networking;
 
@@ -38,6 +39,7 @@ public sealed class ChatSessionManager : IAsyncDisposable
     private Task? _acceptLoopTask;
     private ConnectionContext? _activeConnection;
     private string? _configuredConnectionPassword;
+    private string? _localConnectionCode;
     private bool _serverEnabled;
     private int _disposed;
 
@@ -63,6 +65,22 @@ public sealed class ChatSessionManager : IAsyncDisposable
             lock (_stateGate)
             {
                 return _serverEnabled ? _configuredConnectionPassword : null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The active listener's eight-character connection code. It is hidden
+    /// while the listener is disabled so a stale code cannot be mistaken for
+    /// a currently reachable endpoint.
+    /// </summary>
+    public string? LocalConnectionCode
+    {
+        get
+        {
+            lock (_stateGate)
+            {
+                return _serverEnabled ? _localConnectionCode : null;
             }
         }
     }
@@ -99,6 +117,38 @@ public sealed class ChatSessionManager : IAsyncDisposable
             }
 
             _configuredConnectionPassword = validatedPassword;
+            _localConnectionCode = null;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Atomically changes the inbound password and its user-facing connection
+    /// code. Existing authenticated sessions keep their negotiated keys;
+    /// future handshakes read the new password under the same state lock.
+    /// </summary>
+    public bool SetConnectionCode(string? code)
+    {
+        if (Volatile.Read(ref _disposed) != 0
+            || !ConnectionCodeService.TryDecode(
+                code,
+                out ConnectionCodeInfo connectionCode,
+                out _))
+        {
+            return false;
+        }
+
+        lock (_stateGate)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                return false;
+            }
+
+            // Both values are assigned while holding the same gate used by
+            // listener setup and inbound authentication.
+            _configuredConnectionPassword = connectionCode.AuthenticationPassword;
+            _localConnectionCode = connectionCode.Code;
             return true;
         }
     }
@@ -117,6 +167,7 @@ public sealed class ChatSessionManager : IAsyncDisposable
             }
 
             _configuredConnectionPassword = null;
+            _localConnectionCode = null;
             return true;
         }
     }
@@ -527,6 +578,7 @@ public sealed class ChatSessionManager : IAsyncDisposable
             }
 
             _serverEnabled = false;
+            _localConnectionCode = null;
             listener = _listener;
             listenerCts = _listenerCts;
             acceptTask = _acceptLoopTask;

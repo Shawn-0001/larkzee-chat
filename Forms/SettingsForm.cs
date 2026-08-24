@@ -14,8 +14,11 @@ public sealed class SettingsForm : Form
     private readonly CancellationTokenSource _lifetimeCts = new();
 
     private readonly CheckBox _serverToggle;
-    private readonly TextBox _localPasswordInput;
-    private readonly Button _copyPasswordButton;
+    private readonly ComboBox _localAddressSelector;
+    private readonly Label _localAddressStatusLabel;
+    private readonly TextBox _localConnectionCodeInput;
+    private readonly Button _copyConnectionCodeButton;
+    private readonly TextBox _remoteConnectionCodeInput;
     private readonly TextBox _remoteIpInput;
     private readonly TextBox _remotePasswordInput;
     private readonly Button _saveButton;
@@ -34,8 +37,8 @@ public sealed class SettingsForm : Form
 
         Text = "配置 - Larkzee Chat";
         StartPosition = FormStartPosition.CenterParent;
-        ClientSize = new Size(500, 430);
-        MinimumSize = new Size(460, 390);
+        ClientSize = new Size(500, 500);
+        MinimumSize = new Size(460, 450);
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = false;
@@ -59,14 +62,19 @@ public sealed class SettingsForm : Form
 
         GroupBox serviceGroup = BuildServiceGroup(
             out _serverToggle,
-            out _localPasswordInput,
-            out _copyPasswordButton);
-        GroupBox remoteGroup = BuildRemoteGroup(out _remoteIpInput, out _remotePasswordInput);
+            out _localAddressSelector,
+            out _localAddressStatusLabel,
+            out _localConnectionCodeInput,
+            out _copyConnectionCodeButton);
+        GroupBox remoteGroup = BuildRemoteGroup(
+            out _remoteConnectionCodeInput,
+            out _remoteIpInput,
+            out _remotePasswordInput);
         var hint = new Label
         {
             AutoSize = true,
             MaximumSize = new Size(450, 0),
-            Text = "密码设置后会保存在本机，连接时由对方验证。首次启用时 Windows 可能提示防火墙访问，请仅允许专用网络。",
+            Text = "连接码包含局域网 IP 和临时短口令，连接建立后仍会使用加密通信。配置会保存在本机；首次启用时 Windows 可能提示防火墙访问，请仅允许专用网络。",
             ForeColor = Color.FromArgb(115, 115, 115),
             Font = new Font("Segoe UI", 8.5F, FontStyle.Italic, GraphicsUnit.Point),
             Margin = new Padding(3, 7, 3, 7)
@@ -103,8 +111,13 @@ public sealed class SettingsForm : Form
         AcceptButton = _saveButton;
 
         _serverToggle.CheckedChanged += ServerToggle_CheckedChanged;
-        _copyPasswordButton.Click += CopyPasswordButton_Click;
-        _localPasswordInput.TextChanged += (_, _) => UpdateLocalPasswordControls();
+        _copyConnectionCodeButton.Click += CopyConnectionCodeButton_Click;
+        _remoteConnectionCodeInput.TextChanged += RemoteConnectionCodeInput_TextChanged;
+        Shown += (_, _) =>
+        {
+            RefreshLocalAddressCandidates();
+            UpdateLocalConnectionControls();
+        };
         FormClosing += SettingsForm_FormClosing;
         FormClosed += (_, _) =>
         {
@@ -116,7 +129,8 @@ public sealed class SettingsForm : Form
         _isInitializing = true;
         try
         {
-            _localPasswordInput.Text = _settings.LocalPassword;
+            RefreshLocalAddressCandidates();
+            _remoteConnectionCodeInput.Text = _settings.RemoteConnectionCode ?? string.Empty;
             _remoteIpInput.Text = _settings.RemoteIp;
             _remotePasswordInput.Text = _settings.RemotePassword;
             _serverToggle.Checked = _sessionManager.IsServerEnabled;
@@ -126,13 +140,16 @@ public sealed class SettingsForm : Form
             _isInitializing = false;
         }
 
-        UpdateLocalPasswordControls();
+        ApplyRemoteConnectionCodeToFields();
+        UpdateLocalConnectionControls();
     }
 
     private static GroupBox BuildServiceGroup(
         out CheckBox toggle,
-        out TextBox localPasswordInput,
-        out Button copyPasswordButton)
+        out ComboBox localAddressSelector,
+        out Label localAddressStatusLabel,
+        out TextBox localConnectionCodeInput,
+        out Button copyConnectionCodeButton)
     {
         var group = new GroupBox
         {
@@ -148,7 +165,7 @@ public sealed class SettingsForm : Form
             AutoSize = true,
             Dock = DockStyle.Fill,
             ColumnCount = 3,
-            RowCount = 2,
+            RowCount = 4,
             Margin = new Padding(0)
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 105F));
@@ -164,44 +181,83 @@ public sealed class SettingsForm : Form
             AccessibleName = "允许其他电脑连接"
         };
 
-        var localPasswordLabel = new Label
+        var localAddressLabel = new Label
         {
-            Text = "本机连接密码",
+            Text = "本机 IP",
             AutoSize = true,
             Anchor = AnchorStyles.Left,
             Margin = new Padding(3, 5, 10, 5),
-            AccessibleName = "本机连接密码"
+            AccessibleName = "本机局域网 IPv4 地址"
         };
 
-        localPasswordInput = new TextBox
+        localAddressSelector = new ComboBox
         {
             Dock = DockStyle.Fill,
-            MaxLength = AuthenticationService.MaximumManualPasswordLength,
-            UseSystemPasswordChar = true,
-            Margin = new Padding(0, 2, 7, 5),
-            AccessibleName = "本机连接密码"
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            IntegralHeight = false,
+            MaxDropDownItems = 8,
+            Margin = new Padding(0, 2, 0, 7),
+            AccessibleName = "选择本机局域网 IPv4 地址"
         };
 
-        copyPasswordButton = new Button
+        var localCodeLabel = new Label
         {
-            Text = "复制密码",
+            Text = "我的连接码",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(3, 5, 10, 5),
+            AccessibleName = "我的连接码"
+        };
+
+        localConnectionCodeInput = new TextBox
+        {
+            Dock = DockStyle.Fill,
+            ReadOnly = true,
+            MaxLength = ConnectionCodeService.CodeLength,
+            PlaceholderText = "开启服务后生成",
+            BackColor = Color.FromArgb(248, 249, 251),
+            Font = new Font("Consolas", 10F, FontStyle.Bold, GraphicsUnit.Point),
+            Margin = new Padding(0, 2, 7, 5),
+            AccessibleName = "我的连接码"
+        };
+
+        copyConnectionCodeButton = new Button
+        {
+            Text = "复制",
             AutoSize = true,
             FlatStyle = FlatStyle.System,
             Margin = new Padding(0, 1, 0, 5),
-            AccessibleName = "复制本机连接密码"
+            AccessibleName = "复制我的连接码"
+        };
+
+        localAddressStatusLabel = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(430, 0),
+            ForeColor = Color.FromArgb(115, 115, 115),
+            Margin = new Padding(3, 0, 3, 2),
+            AccessibleName = "本机 IP 状态"
         };
 
         layout.Controls.Add(toggle, 0, 0);
         layout.SetColumnSpan(toggle, 3);
-        layout.Controls.Add(localPasswordLabel, 0, 1);
-        layout.Controls.Add(localPasswordInput, 1, 1);
-        layout.Controls.Add(copyPasswordButton, 2, 1);
+        layout.Controls.Add(localAddressLabel, 0, 1);
+        layout.Controls.Add(localAddressSelector, 1, 1);
+        layout.SetColumnSpan(localAddressSelector, 2);
+        layout.Controls.Add(localCodeLabel, 0, 2);
+        layout.Controls.Add(localConnectionCodeInput, 1, 2);
+        layout.Controls.Add(copyConnectionCodeButton, 2, 2);
+        layout.Controls.Add(localAddressStatusLabel, 0, 3);
+        layout.SetColumnSpan(localAddressStatusLabel, 3);
 
         group.Controls.Add(layout);
         return group;
     }
 
-    private static GroupBox BuildRemoteGroup(out TextBox ipInput, out TextBox passwordInput)
+    private static GroupBox BuildRemoteGroup(
+        out TextBox connectionCodeInput,
+        out TextBox ipInput,
+        out TextBox passwordInput)
     {
         var group = new GroupBox
         {
@@ -217,11 +273,40 @@ public sealed class SettingsForm : Form
             AutoSize = true,
             Dock = DockStyle.Fill,
             ColumnCount = 2,
-            RowCount = 2,
+            RowCount = 4,
             Margin = new Padding(0)
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 94F));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+
+        var codeLabel = new Label
+        {
+            Text = "对方连接码",
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(3, 5, 10, 5),
+            AccessibleName = "对方连接码"
+        };
+        connectionCodeInput = new TextBox
+        {
+            Dock = DockStyle.Fill,
+            MaxLength = ConnectionCodeService.CodeLength,
+            CharacterCasing = CharacterCasing.Lower,
+            PlaceholderText = "输入 8 位连接码",
+            Margin = new Padding(0, 2, 0, 2),
+            AccessibleName = "对方连接码"
+        };
+
+        var codeHint = new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(390, 0),
+            Text = "输入连接码后自动填写；也可手动输入 IP 和密码。",
+            ForeColor = Color.FromArgb(115, 115, 115),
+            Font = new Font("Segoe UI", 8.5F, FontStyle.Italic, GraphicsUnit.Point),
+            Margin = new Padding(3, 0, 3, 7),
+            AccessibleName = "连接码输入说明"
+        };
 
         var ipLabel = new Label
         {
@@ -257,10 +342,14 @@ public sealed class SettingsForm : Form
             AccessibleName = "对方密码"
         };
 
-        layout.Controls.Add(ipLabel, 0, 0);
-        layout.Controls.Add(ipInput, 1, 0);
-        layout.Controls.Add(passwordLabel, 0, 1);
-        layout.Controls.Add(passwordInput, 1, 1);
+        layout.Controls.Add(codeLabel, 0, 0);
+        layout.Controls.Add(connectionCodeInput, 1, 0);
+        layout.Controls.Add(codeHint, 0, 1);
+        layout.SetColumnSpan(codeHint, 2);
+        layout.Controls.Add(ipLabel, 0, 2);
+        layout.Controls.Add(ipInput, 1, 2);
+        layout.Controls.Add(passwordLabel, 0, 3);
+        layout.Controls.Add(passwordInput, 1, 3);
         group.Controls.Add(layout);
         return group;
     }
@@ -279,55 +368,110 @@ public sealed class SettingsForm : Form
     {
         _serverOperationInProgress = true;
         _serverToggle.Enabled = false;
-        _copyPasswordButton.Enabled = false;
+        _localAddressSelector.Enabled = false;
+        _copyConnectionCodeButton.Enabled = false;
         _saveButton.Enabled = false;
+
+        AppSettings? previousSettings = null;
+        string? previousCode = null;
+        string? previousPassword = null;
+        bool localConfigurationChanged = false;
 
         try
         {
-            if (enabled)
-            {
-                if (!TryReadPendingSettings(requireLocalPassword: true, out PendingSettings pending))
-                {
-                    SetServerToggleState(false);
-                    return;
-                }
-
-                // Persist the typed password before opening the listener. This
-                // also keeps the remote connection fields in sync with what
-                // the user sees in this form.
-                if (!TryPersistPendingSettings(pending, out string persistError))
-                {
-                    SetServerToggleState(false);
-                    ShowFriendlyError(persistError);
-                    return;
-                }
-
-                ServerStartResult result = await _sessionManager
-                    .EnableServerAsync(_lifetimeCts.Token)
-                    .ConfigureAwait(true);
-                if (!result.Succeeded)
-                {
-                    // The password remains saved and configured for a later
-                    // retry; only the listener checkbox is reverted.
-                    SetServerToggleState(false);
-                    ShowFriendlyError("无法开启连接服务，请确认端口未被占用后重试。密码设置已保留。");
-                }
-            }
-            else
+            if (!enabled)
             {
                 await _sessionManager.DisableServerAsync(_lifetimeCts.Token).ConfigureAwait(true);
+                _localConnectionCodeInput.Clear();
+                return;
             }
+
+            if (!TryGetSelectedLocalAddress(out LocalNetworkAddressCandidate? localAddress)
+                || !TryReadPendingSettings(_settings.LocalPassword, out PendingSettings remotePending))
+            {
+                SetServerToggleState(false);
+                return;
+            }
+
+            if (localAddress is null)
+            {
+                SetServerToggleState(false);
+                return;
+            }
+
+            ConnectionCodeInfo generated = ConnectionCodeService.Generate(localAddress.Address);
+            previousSettings = CloneSettings(_settings);
+            previousCode = _sessionManager.LocalConnectionCode;
+            previousPassword = _sessionManager.LocalPassword;
+            PendingSettings pending = remotePending with
+            {
+                LocalPassword = generated.AuthenticationPassword
+            };
+
+            if (!_sessionManager.SetConnectionCode(generated.Code))
+            {
+                SetServerToggleState(false);
+                ShowFriendlyError("连接码生成失败，请重新尝试。配置未更改。");
+                return;
+            }
+            localConfigurationChanged = true;
+
+            if (!TryPersistPendingSettings(pending, out string persistError))
+            {
+                RestoreLocalConfiguration(previousCode, previousPassword);
+                _settingsService.Save(previousSettings);
+                CopySettings(previousSettings, _settings);
+                SetServerToggleState(false);
+                ShowFriendlyError(persistError);
+                return;
+            }
+
+            ServerStartResult result = await _sessionManager
+                .EnableServerAsync(_lifetimeCts.Token)
+                .ConfigureAwait(true);
+            if (!result.Succeeded)
+            {
+                bool restored = RestoreLocalConfiguration(previousCode, previousPassword);
+                bool settingsRolledBack = _settingsService.Save(previousSettings);
+                CopySettings(previousSettings, _settings);
+                _localConnectionCodeInput.Clear();
+                SetServerToggleState(false);
+                localConfigurationChanged = false;
+                ShowFriendlyError(restored && settingsRolledBack
+                    ? "无法开启连接服务，请确认端口未被占用后重试。配置未更改。"
+                    : "无法开启连接服务，且配置回滚失败，请检查本地文件。请勿分享本次连接码。\n\n请关闭配置窗口后重试。"
+                );
+                return;
+            }
+
+            _localConnectionCodeInput.Text = generated.Code;
+            localConfigurationChanged = false;
         }
         catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
         {
+            if (localConfigurationChanged && previousSettings is not null)
+            {
+                RestoreLocalConfiguration(previousCode, previousPassword);
+                _settingsService.Save(previousSettings);
+                CopySettings(previousSettings, _settings);
+            }
+
             // The settings window owns cancellation while it is closing.
         }
         catch (Exception exception)
         {
             Debug.WriteLine($"Larkzee Chat server toggle failed: {exception}");
+            if (localConfigurationChanged && previousSettings is not null)
+            {
+                RestoreLocalConfiguration(previousCode, previousPassword);
+                _settingsService.Save(previousSettings);
+                CopySettings(previousSettings, _settings);
+                _localConnectionCodeInput.Clear();
+            }
+
             SetServerToggleState(!enabled);
             ShowFriendlyError(enabled
-                ? "无法开启连接服务，请稍后重试。"
+                ? "无法开启连接服务，请稍后重试。配置未更改。"
                 : "无法关闭连接服务，请稍后重试。");
         }
         finally
@@ -335,27 +479,61 @@ public sealed class SettingsForm : Form
             _serverOperationInProgress = false;
             _serverToggle.Enabled = !_isClosing;
             _saveButton.Enabled = !_isClosing;
-            UpdateLocalPasswordControls();
+            UpdateLocalConnectionControls();
         }
     }
 
-    private void CopyPasswordButton_Click(object? sender, EventArgs e)
+    private void CopyConnectionCodeButton_Click(object? sender, EventArgs e)
     {
-        string password = _localPasswordInput.Text;
-        if (string.IsNullOrEmpty(password))
+        string? code = _sessionManager.IsServerEnabled
+            ? _sessionManager.LocalConnectionCode
+            : null;
+        if (string.IsNullOrEmpty(code))
         {
             return;
         }
 
         try
         {
-            Clipboard.SetText(password);
+            Clipboard.SetText(code);
         }
         catch (Exception exception)
         {
-            Debug.WriteLine($"Larkzee Chat could not copy the local password: {exception.Message}");
-            ShowFriendlyError("复制密码失败，请手动记录密码。");
+            Debug.WriteLine($"Larkzee Chat could not copy the local connection code: {exception.Message}");
+            ShowFriendlyError("复制连接码失败，请手动记录连接码。");
         }
+    }
+
+    private void RemoteConnectionCodeInput_TextChanged(object? sender, EventArgs e)
+    {
+        if (_isInitializing)
+        {
+            return;
+        }
+
+        ApplyRemoteConnectionCodeToFields();
+    }
+
+    private void ApplyRemoteConnectionCodeToFields()
+    {
+        string rawCode = _remoteConnectionCodeInput.Text.Trim();
+        if (rawCode.Length != ConnectionCodeService.CodeLength
+            || !ConnectionCodeService.TryDecode(
+                rawCode,
+                out ConnectionCodeInfo connectionCode,
+                out _))
+        {
+            return;
+        }
+
+        if (_remoteConnectionCodeInput.Text != connectionCode.Code)
+        {
+            _remoteConnectionCodeInput.Text = connectionCode.Code;
+            _remoteConnectionCodeInput.SelectionStart = _remoteConnectionCodeInput.TextLength;
+        }
+
+        _remoteIpInput.Text = connectionCode.Address.ToString();
+        _remotePasswordInput.Text = connectionCode.AuthenticationPassword;
     }
 
     private void SaveButton_Click(object? sender, EventArgs e)
@@ -365,9 +543,25 @@ public sealed class SettingsForm : Form
             return;
         }
 
-        if (!TryReadPendingSettings(_serverToggle.Checked, out PendingSettings pending))
+        if (!TryReadPendingSettings(_settings.LocalPassword, out PendingSettings pending))
         {
             return;
+        }
+
+        if (_serverToggle.Checked)
+        {
+            string? activeCode = _sessionManager.LocalConnectionCode;
+            if (string.IsNullOrEmpty(activeCode)
+                || !ConnectionCodeService.TryDecode(
+                    activeCode,
+                    out ConnectionCodeInfo localCode,
+                    out _))
+            {
+                ShowFriendlyError("当前连接服务没有有效的连接码，请关闭服务后重新开启。");
+                return;
+            }
+
+            pending = pending with { LocalPassword = localCode.AuthenticationPassword };
         }
 
         if (!TryPersistPendingSettings(pending, out string persistError))
@@ -380,21 +574,32 @@ public sealed class SettingsForm : Form
         Close();
     }
 
-    private bool TryReadPendingSettings(bool requireLocalPassword, out PendingSettings pending)
+    private bool TryReadPendingSettings(
+        string localPassword,
+        out PendingSettings pending)
     {
         pending = default;
-        string localPassword = _localPasswordInput.Text;
-        if (requireLocalPassword && string.IsNullOrEmpty(localPassword))
+        string rawCode = _remoteConnectionCodeInput.Text.Trim();
+        if (!string.IsNullOrEmpty(rawCode))
         {
-            ShowFriendlyError("启用连接服务前，请先设置本机连接密码。");
-            return false;
-        }
+            if (!ConnectionCodeService.TryDecode(
+                    rawCode,
+                    out ConnectionCodeInfo connectionCode,
+                    out ConnectionCodeFailureReason failureReason))
+            {
+                ShowFriendlyError(GetConnectionCodeError(failureReason));
+                return false;
+            }
 
-        if (!string.IsNullOrEmpty(localPassword)
-            && !AuthenticationService.TryValidateManualPassword(localPassword, out _))
-        {
-            ShowFriendlyError("本机连接密码需为 8–64 个字符，且首尾不能有空格。");
-            return false;
+            _remoteConnectionCodeInput.Text = connectionCode.Code;
+            _remoteIpInput.Text = connectionCode.Address.ToString();
+            _remotePasswordInput.Text = connectionCode.AuthenticationPassword;
+            pending = new PendingSettings(
+                connectionCode.Address.ToString(),
+                localPassword,
+                connectionCode.AuthenticationPassword,
+                connectionCode.Code);
+            return true;
         }
 
         string remoteIp = _remoteIpInput.Text.Trim();
@@ -403,7 +608,7 @@ public sealed class SettingsForm : Form
         bool passwordEmpty = string.IsNullOrEmpty(remotePassword);
         if (ipEmpty != passwordEmpty)
         {
-            ShowFriendlyError("请同时填写对方 IP 和对方密码。");
+            ShowFriendlyError("请同时填写对方 IP 和对方密码，或输入对方连接码。");
             return false;
         }
 
@@ -426,45 +631,119 @@ public sealed class SettingsForm : Form
             return false;
         }
 
-        pending = new PendingSettings(normalizedIp, localPassword, remotePassword);
+        pending = new PendingSettings(
+            normalizedIp,
+            localPassword,
+            remotePassword,
+            string.Empty);
         return true;
     }
 
     private bool TryPersistPendingSettings(PendingSettings pending, out string error)
     {
-        AppSettings previous = CloneSettings(_settings);
         AppSettings candidate = new()
         {
             RemoteIp = pending.RemoteIp,
             LocalPassword = pending.LocalPassword,
-            RemotePassword = pending.RemotePassword
+            RemotePassword = pending.RemotePassword,
+            RemoteConnectionCode = pending.RemoteConnectionCode
         };
 
-        // Save first so a newly entered password is never left only in the
-        // process if applying it to the manager is unavailable.
         if (!_settingsService.Save(candidate))
         {
             error = "配置保存失败，请检查本地文件权限。";
             return false;
         }
 
-        bool passwordApplied = string.IsNullOrEmpty(pending.LocalPassword)
-            ? _sessionManager.ClearConnectionPassword()
-            : _sessionManager.SetConnectionPassword(pending.LocalPassword);
-        if (!passwordApplied)
-        {
-            bool rolledBack = _settingsService.Save(previous);
-            error = rolledBack
-                ? "本机连接密码暂时无法应用，配置未更改。"
-                : "本机连接密码暂时无法应用，且配置回滚失败，请检查本地文件。";
-            return false;
-        }
-
-        _settings.RemoteIp = candidate.RemoteIp;
-        _settings.LocalPassword = candidate.LocalPassword;
-        _settings.RemotePassword = candidate.RemotePassword;
+        CopySettings(candidate, _settings);
         error = string.Empty;
         return true;
+    }
+
+    private void RefreshLocalAddressCandidates()
+    {
+        string? activeCode = _sessionManager.LocalConnectionCode;
+        IPAddress? preferredAddress = null;
+        if (!string.IsNullOrWhiteSpace(activeCode)
+            && ConnectionCodeService.TryDecode(activeCode, out ConnectionCodeInfo activeConnectionCode, out _))
+        {
+            preferredAddress = activeConnectionCode.Address;
+        }
+
+        IReadOnlyList<LocalNetworkAddressCandidate> candidates;
+        try
+        {
+            candidates = LocalNetworkAddressService.GetCandidates();
+        }
+        catch (Exception exception)
+        {
+            Debug.WriteLine($"Larkzee Chat local network address discovery failed: {exception}");
+            candidates = [];
+        }
+
+        _localAddressSelector.BeginUpdate();
+        try
+        {
+            _localAddressSelector.Items.Clear();
+            foreach (LocalNetworkAddressCandidate candidate in candidates)
+            {
+                _localAddressSelector.Items.Add(candidate);
+            }
+
+            int selectedIndex = -1;
+            if (preferredAddress is not null)
+            {
+                for (int index = 0; index < candidates.Count; index++)
+                {
+                    if (candidates[index].Address.Equals(preferredAddress))
+                    {
+                        selectedIndex = index;
+                        break;
+                    }
+                }
+            }
+
+            _localAddressSelector.SelectedIndex = selectedIndex >= 0
+                ? selectedIndex
+                : (candidates.Count > 0 ? 0 : -1);
+        }
+        finally
+        {
+            _localAddressSelector.EndUpdate();
+        }
+
+        _localAddressStatusLabel.Text = candidates.Count == 0
+            ? "未发现可用的局域网 IPv4 地址（仅支持 10.x、172.16–31.x、192.168.x）。"
+            : "连接码将包含当前选择的本机 IP；服务开启后不能切换。";
+    }
+
+    private bool TryGetSelectedLocalAddress(out LocalNetworkAddressCandidate? candidate)
+    {
+        candidate = _localAddressSelector.SelectedItem as LocalNetworkAddressCandidate;
+        if (candidate is not null)
+        {
+            return true;
+        }
+
+        ShowFriendlyError("未找到可用的局域网 IPv4 地址，无法生成连接码。请连接到局域网后重试。\n\n支持的地址范围：10.x、172.16–31.x、192.168.x。");
+        return false;
+    }
+
+    private bool RestoreLocalConfiguration(string? previousCode, string? previousPassword)
+    {
+        if (!string.IsNullOrWhiteSpace(previousCode)
+            && _sessionManager.SetConnectionCode(previousCode))
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(previousPassword)
+            && _sessionManager.SetConnectionPassword(previousPassword))
+        {
+            return true;
+        }
+
+        return _sessionManager.ClearConnectionPassword();
     }
 
     private void SettingsForm_FormClosing(object? sender, FormClosingEventArgs e)
@@ -487,11 +766,26 @@ public sealed class SettingsForm : Form
         }
     }
 
-    private void UpdateLocalPasswordControls()
+    private void UpdateLocalConnectionControls()
     {
-        _copyPasswordButton.Enabled = !_serverOperationInProgress
+        bool serverEnabled = _sessionManager.IsServerEnabled;
+        string? activeCode = _sessionManager.LocalConnectionCode;
+        if (serverEnabled && !string.IsNullOrWhiteSpace(activeCode))
+        {
+            _localConnectionCodeInput.Text = activeCode;
+        }
+        else if (!serverEnabled)
+        {
+            _localConnectionCodeInput.Clear();
+        }
+
+        _localAddressSelector.Enabled = !_serverOperationInProgress
             && !_isClosing
-            && !string.IsNullOrEmpty(_localPasswordInput.Text);
+            && !serverEnabled;
+        _copyConnectionCodeButton.Enabled = !_serverOperationInProgress
+            && !_isClosing
+            && serverEnabled
+            && !string.IsNullOrEmpty(activeCode);
     }
 
     private static AppSettings CloneSettings(AppSettings settings)
@@ -500,7 +794,29 @@ public sealed class SettingsForm : Form
         {
             RemoteIp = settings.RemoteIp,
             LocalPassword = settings.LocalPassword,
-            RemotePassword = settings.RemotePassword
+            RemotePassword = settings.RemotePassword,
+            RemoteConnectionCode = settings.RemoteConnectionCode
+        };
+    }
+
+    private static void CopySettings(AppSettings source, AppSettings target)
+    {
+        target.RemoteIp = source.RemoteIp;
+        target.LocalPassword = source.LocalPassword;
+        target.RemotePassword = source.RemotePassword;
+        target.RemoteConnectionCode = source.RemoteConnectionCode;
+    }
+
+    private static string GetConnectionCodeError(ConnectionCodeFailureReason failureReason)
+    {
+        return failureReason switch
+        {
+            ConnectionCodeFailureReason.InvalidLength => "连接码需为 8 个字符，请检查是否完整。",
+            ConnectionCodeFailureReason.InvalidCharacter => "连接码只能使用小写字母和数字（不含 0、1、i、o）。",
+            ConnectionCodeFailureReason.ChecksumMismatch => "连接码输入有误，请检查字符。",
+            ConnectionCodeFailureReason.InvalidPayload => "连接码无法识别，请确认对方提供的是最新连接码。",
+            ConnectionCodeFailureReason.UnsupportedAddress => "连接码中的地址不受支持，请让对方重新生成连接码。",
+            _ => "连接码无效，请检查后重试。"
         };
     }
 
@@ -512,5 +828,6 @@ public sealed class SettingsForm : Form
     private readonly record struct PendingSettings(
         string RemoteIp,
         string LocalPassword,
-        string RemotePassword);
+        string RemotePassword,
+        string RemoteConnectionCode);
 }

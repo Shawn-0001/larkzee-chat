@@ -76,6 +76,26 @@ public sealed class SettingsService
 
             settings.LocalPassword = UnprotectPassword(persisted.LocalPasswordProtected);
             settings.RemotePassword = UnprotectPassword(persisted.RemotePasswordProtected);
+            settings.RemoteConnectionCode = UnprotectConnectionCode(persisted.RemoteConnectionCodeProtected);
+            if (ConnectionCodeService.TryDecode(
+                    settings.RemoteConnectionCode,
+                    out ConnectionCodeInfo connectionCode,
+                    out _))
+            {
+                // A code-only settings file can reconnect after restart. If
+                // legacy/manual fields are present, preserve them so adding
+                // this optional field cannot unexpectedly change an existing
+                // user's explicitly configured peer credential.
+                if (string.IsNullOrWhiteSpace(settings.RemoteIp))
+                {
+                    settings.RemoteIp = connectionCode.Address.ToString();
+                }
+
+                if (string.IsNullOrWhiteSpace(settings.RemotePassword))
+                {
+                    settings.RemotePassword = connectionCode.AuthenticationPassword;
+                }
+            }
             return settings;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
@@ -99,7 +119,8 @@ public sealed class SettingsService
             {
                 RemoteIp = settings.RemoteIp?.Trim() ?? string.Empty,
                 LocalPasswordProtected = ProtectPassword(settings.LocalPassword),
-                RemotePasswordProtected = ProtectPassword(settings.RemotePassword)
+                RemotePasswordProtected = ProtectPassword(settings.RemotePassword),
+                RemoteConnectionCodeProtected = ProtectConnectionCode(settings.RemoteConnectionCode)
             };
 
             string json = JsonSerializer.Serialize(persisted, SerializerOptions);
@@ -159,6 +180,36 @@ public sealed class SettingsService
         }
     }
 
+    private static string? ProtectConnectionCode(string? code)
+    {
+        if (!ConnectionCodeService.TryDecode(
+                code,
+                out ConnectionCodeInfo connectionCode,
+                out _))
+        {
+            return null;
+        }
+
+        byte[] plaintext = StrictUtf8.GetBytes(connectionCode.Code);
+        byte[] protectedBytes = Array.Empty<byte>();
+        try
+        {
+            protectedBytes = ProtectedData.Protect(
+                plaintext,
+                OptionalEntropy,
+                DataProtectionScope.CurrentUser);
+            return Convert.ToBase64String(protectedBytes);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(plaintext);
+            if (protectedBytes.Length != 0)
+            {
+                CryptographicOperations.ZeroMemory(protectedBytes);
+            }
+        }
+    }
+
     private static string UnprotectPassword(string? encoded)
     {
         if (string.IsNullOrWhiteSpace(encoded))
@@ -194,6 +245,60 @@ public sealed class SettingsService
             // A bad protected value invalidates only this secret. The caller
             // independently loads the IP and the other password field.
             Debug.WriteLine($"Larkzee Chat protected setting could not be loaded: {exception.Message}");
+            return string.Empty;
+        }
+        finally
+        {
+            if (protectedBytes.Length != 0)
+            {
+                CryptographicOperations.ZeroMemory(protectedBytes);
+            }
+
+            if (plaintext.Length != 0)
+            {
+                CryptographicOperations.ZeroMemory(plaintext);
+            }
+        }
+    }
+
+    private static string UnprotectConnectionCode(string? encoded)
+    {
+        if (string.IsNullOrWhiteSpace(encoded))
+        {
+            return string.Empty;
+        }
+
+        byte[] protectedBytes = Array.Empty<byte>();
+        byte[] plaintext = Array.Empty<byte>();
+        try
+        {
+            protectedBytes = Convert.FromBase64String(encoded);
+            if (protectedBytes.Length == 0)
+            {
+                return string.Empty;
+            }
+
+            plaintext = ProtectedData.Unprotect(
+                protectedBytes,
+                OptionalEntropy,
+                DataProtectionScope.CurrentUser);
+            string candidate = StrictUtf8.GetString(plaintext);
+            return ConnectionCodeService.TryDecode(
+                    candidate,
+                    out ConnectionCodeInfo connectionCode,
+                    out _)
+                ? connectionCode.Code
+                : string.Empty;
+        }
+        catch (Exception exception) when (exception is FormatException
+                                          or CryptographicException
+                                          or PlatformNotSupportedException
+                                          or ArgumentException
+                                          or DecoderFallbackException)
+        {
+            // A bad protected code invalidates only this field. The peer IP
+            // and the two independent password fields remain loadable.
+            Debug.WriteLine($"Larkzee Chat protected connection code could not be loaded: {exception.Message}");
             return string.Empty;
         }
         finally
@@ -265,6 +370,8 @@ public sealed class SettingsService
         public string? LocalPasswordProtected { get; set; }
 
         public string? RemotePasswordProtected { get; set; }
+
+        public string? RemoteConnectionCodeProtected { get; set; }
     }
 
     private sealed class LegacyPersistedSettings

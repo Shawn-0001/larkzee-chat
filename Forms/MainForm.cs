@@ -523,7 +523,7 @@ public sealed class MainForm : Form
 
     private void OpenSettingsForMissingConnection()
     {
-        ShowFriendlyError("请先在配置中填写对方 IP 和密码。");
+        ShowFriendlyError("请先在配置中填写对方连接码，或 IP 和密码。");
         using var settingsForm = new SettingsForm(_sessionManager, _settingsService, _settings);
         settingsForm.ShowDialog(this);
         ApplyConnectionState(_sessionManager.IsConnected);

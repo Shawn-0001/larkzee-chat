@@ -15,4 +15,11 @@ public sealed class AppSettings
 
     [JsonIgnore]
     public string RemotePassword { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The peer's eight-character connection code. It is protected by
+    /// SettingsService and therefore never serialized as plaintext.
+    /// </summary>
+    [JsonIgnore]
+    public string RemoteConnectionCode { get; set; } = string.Empty;
 }
