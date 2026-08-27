@@ -57,7 +57,7 @@ Target surface: Windows 10/11 desktop, default client area about 720 x 620, mini
 
 ## Main window structure
 
-1. Header: left-aligned `Larkzee Chat` with only `● 已连接` or `● 未连接` beneath it. Right-aligned quiet `⚙ 配置` action and connection action.
+1. Header: compact 52px connection toolbar with no product-title block. Left-aligned status pill showing only `● 已连接` or `● 未连接`; right-aligned quiet `⚙ 配置` action (72x28) and connection action (78x28) separated by a 6px gap.
 2. Conversation: single continuous light surface. Incoming messages align left; outgoing messages align right. Do not show sender labels or avatars. Long text wraps naturally and must never touch window edges or overlap the composer.
 3. Composer: separated from the conversation by a subtle divider. Multiline input occupies most width; the send button is a clear primary action. Enter sends and Shift+Enter inserts a newline.
 

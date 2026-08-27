@@ -21,9 +21,9 @@
         ".superdesign/init/theme.md"
       ],
       "fingerprints": {
-        ".superdesign/design-system.md": "69a0dc8963303ca23771e82ae8d26b911bc9c5c48d41ab383a8c7f3ee40a1daf",
-        "Forms/MainForm.cs": "156510eea780a4e3d6a42e9fb792b36c88854f287eac0b6080f1938e4f891d2c",
-        "Controls/ChatMessageControl.cs": "b1d8de0aa55f2621505d6aaaf0967f8f9a738248e0833054446929da7764ed40",
+        ".superdesign/design-system.md": "59cb2084f1921e38256eab2e2d747466bd42808ce4e53b2665834e73dd261026",
+        "Forms/MainForm.cs": "f8e8e67668fbb5674156820b59a61d86e872d8ed5f16c48cb96f743cd40b43d2",
+        "Controls/ChatMessageControl.cs": "1666e03473bfb12fe4d0f8537790d182b76dcd557f17d0a708c13a529e13640e",
         "Controls/RoundedBorderPanel.cs": "884fbe6bc7f1fbd0a2d1cc20ac2f5c0fc346ca334ec782e074f4815f8f9cf3a7",
         "Controls/BufferedFlowLayoutPanel.cs": "79bea6ad55c69f4ca0ba4d43d96f76f36cb9cfd825f1d6bbace83ed8655d3366",
         ".superdesign/init/theme.md": "5de0e02cf85cf07a9060af19f123576f12d6b6c2a70ca2aab206c1e78b7f6240"
@@ -42,12 +42,12 @@
       ],
       "drafts": {
         "2bc21349-1f2a-4587-a179-1698d2db07f1": {
-          "title": "Polished Native Main Window",
-          "visualDirection": "restrained Windows-native light UI with draw-only rounded bubbles and a WeChat-like bottom-right send composer",
-          "currentVersion": 3
+          "title": "Larkzee Chat 紧凑工具栏",
+          "visualDirection": "restrained Windows-native light UI with a 52px connection-status toolbar and no product title block",
+          "currentVersion": 5
         }
       },
-      "updatedAt": "2026-08-24T01:46:28Z"
+      "updatedAt": "2026-08-26T01:41:00Z"
     }
   }
 }

@@ -11,13 +11,19 @@ public sealed class ChatMessageControl : UserControl
     private const int BubbleBottomPadding = 9;
     private const int TimeGap = 5;
     private const int MeasurementWidthAllowance = 2;
-    private const int MeasurementHeightAllowance = 2;
+    private const int MeasurementHeightAllowance = 6;
+    // RichEdit (the native control behind RichTextBox) reserves a small
+    // horizontal margin even when BorderStyle=None. TextRenderer must measure
+    // the effective content width, otherwise the final wrapped line can be
+    // clipped after the message is inserted.
+    private const int RichTextBoxHorizontalMargin = 6;
     private const int MaximumBubbleWidth = 460;
 
     private readonly RoundedBorderPanel _bubble;
-    private readonly Label _messageLabel;
+    private readonly RichTextBox _messageTextBox;
     private readonly Label _timeLabel;
     private readonly string _message;
+    private readonly string _displayMessage;
     private readonly string _timestamp;
     private readonly Dictionary<int, BubbleMetrics> _layoutCache = [];
     private int _lastLayoutWidth = -1;
@@ -30,6 +36,7 @@ public sealed class ChatMessageControl : UserControl
     public ChatMessageControl(string message, string timestamp, bool isOwnMessage)
     {
         _message = message ?? string.Empty;
+        _displayMessage = NormalizeLineEndingsForDisplay(_message);
         _timestamp = timestamp ?? string.Empty;
         IsOwnMessage = isOwnMessage;
 
@@ -59,16 +66,24 @@ public sealed class ChatMessageControl : UserControl
             TabStop = false
         };
 
-        _messageLabel = new Label
+        _messageTextBox = new RichTextBox
         {
-            AutoSize = false,
-            BackColor = Color.Transparent,
+            BackColor = _bubble.BackColor,
             ForeColor = Color.FromArgb(24, 34, 48), // #182230
             Font = new Font("Segoe UI", 10F, FontStyle.Regular, GraphicsUnit.Point),
-            Text = _message,
-            UseCompatibleTextRendering = false,
-            UseMnemonic = false,
-            TabStop = false
+            Text = _displayMessage,
+            ReadOnly = true,
+            Multiline = true,
+            WordWrap = true,
+            ScrollBars = RichTextBoxScrollBars.None,
+            BorderStyle = BorderStyle.None,
+            DetectUrls = false,
+            ShortcutsEnabled = true,
+            HideSelection = false,
+            TabStop = false,
+            Cursor = Cursors.IBeam,
+            AccessibleName = "消息正文",
+            AccessibleRole = AccessibleRole.Text
         };
 
         _timeLabel = new Label
@@ -82,7 +97,7 @@ public sealed class ChatMessageControl : UserControl
             TabStop = false
         };
 
-        _bubble.Controls.Add(_messageLabel);
+        _bubble.Controls.Add(_messageTextBox);
         _bubble.Controls.Add(_timeLabel);
         Controls.Add(_bubble);
 
@@ -136,25 +151,26 @@ public sealed class ChatMessageControl : UserControl
         int maxTextWidth = Math.Max(1, maxBubbleWidth - (BubblePadding * 2));
         if (!_layoutCache.TryGetValue(maxTextWidth, out BubbleMetrics metrics))
         {
-            string measurableText = _message.Length == 0 ? " " : _message;
+            string measurableText = _displayMessage.Length == 0 ? " " : _displayMessage;
             const TextFormatFlags measureFlags = TextFormatFlags.WordBreak
                 | TextFormatFlags.TextBoxControl
                 | TextFormatFlags.NoPrefix;
 
+            int maximumContentWidth = Math.Max(1, maxTextWidth - RichTextBoxHorizontalMargin);
             Size naturalSize = TextRenderer.MeasureText(
                 measurableText,
-                _messageLabel.Font,
+                _messageTextBox.Font,
                 new Size(int.MaxValue, int.MaxValue),
                 measureFlags);
-            bool wraps = naturalSize.Width > maxTextWidth;
-            int measuredTextWidth = wraps
-                ? maxTextWidth
-                : Math.Min(maxTextWidth, naturalSize.Width + MeasurementWidthAllowance);
+            bool wraps = naturalSize.Width > maximumContentWidth;
+            int measuredContentWidth = wraps
+                ? maximumContentWidth
+                : Math.Min(maximumContentWidth, naturalSize.Width + MeasurementWidthAllowance);
             Size measuredSize =
                 TextRenderer.MeasureText(
                     measurableText,
-                    _messageLabel.Font,
-                    new Size(Math.Max(1, measuredTextWidth), int.MaxValue),
+                    _messageTextBox.Font,
+                    new Size(Math.Max(1, measuredContentWidth), int.MaxValue),
                     measureFlags);
             int timestampWidth = TextRenderer.MeasureText(
                 _timestamp.Length == 0 ? " " : _timestamp,
@@ -162,21 +178,25 @@ public sealed class ChatMessageControl : UserControl
                 new Size(int.MaxValue, int.MaxValue),
                 TextFormatFlags.NoPrefix).Width;
             int textWidth = Math.Clamp(
-                Math.Max(measuredTextWidth, timestampWidth + MeasurementWidthAllowance),
+                Math.Max(
+                    measuredContentWidth + RichTextBoxHorizontalMargin,
+                    timestampWidth + MeasurementWidthAllowance),
                 1,
                 maxTextWidth);
-            if (textWidth != measuredTextWidth)
+            int effectiveTextWidth = Math.Max(1, textWidth - RichTextBoxHorizontalMargin);
+            if (effectiveTextWidth != measuredContentWidth)
             {
                 measuredSize = TextRenderer.MeasureText(
                     measurableText,
-                    _messageLabel.Font,
-                    new Size(textWidth, int.MaxValue),
+                    _messageTextBox.Font,
+                    new Size(effectiveTextWidth, int.MaxValue),
                     measureFlags);
             }
 
             int textHeight = Math.Max(
-                _messageLabel.Font.Height,
+                _messageTextBox.Font.Height,
                 measuredSize.Height) + MeasurementHeightAllowance;
+            textHeight = MeasureRichTextBoxHeight(textWidth, textHeight);
             Size measuredTimestamp = TextRenderer.MeasureText(
                 _timestamp.Length == 0 ? " " : _timestamp,
                 _timeLabel.Font,
@@ -189,13 +209,13 @@ public sealed class ChatMessageControl : UserControl
             _layoutCache[maxTextWidth] = metrics;
         }
 
-        _messageLabel.Bounds = new Rectangle(
+        _messageTextBox.Bounds = new Rectangle(
             BubblePadding,
             BubbleTopPadding,
             metrics.TextWidth,
             metrics.TextHeight);
 
-        int timeTop = _messageLabel.Bottom + TimeGap;
+        int timeTop = _messageTextBox.Bottom + TimeGap;
         _timeLabel.Bounds = new Rectangle(
             BubblePadding,
             timeTop,
@@ -222,5 +242,44 @@ public sealed class ChatMessageControl : UserControl
         {
             Height = bubbleHeight;
         }
+    }
+
+    private int MeasureRichTextBoxHeight(int textWidth, int measuredHeight)
+    {
+        try
+        {
+            if (!_messageTextBox.IsHandleCreated)
+            {
+                _messageTextBox.CreateControl();
+            }
+
+            int probeHeight = Math.Clamp(
+                Math.Max(measuredHeight, 4_096),
+                1,
+                32_000);
+            _messageTextBox.Bounds = new Rectangle(
+                BubblePadding,
+                BubbleTopPadding,
+                Math.Max(1, textWidth),
+                probeHeight);
+            Point end = _messageTextBox.GetPositionFromCharIndex(_messageTextBox.TextLength);
+            int actualHeight = end.Y + _messageTextBox.Font.Height + MeasurementHeightAllowance;
+            return Math.Max(measuredHeight, actualHeight);
+        }
+        catch (Exception exception) when (exception is ArgumentException
+                                           or InvalidOperationException
+                                           or System.ComponentModel.Win32Exception)
+        {
+            System.Diagnostics.Debug.WriteLine(exception);
+            return measuredHeight;
+        }
+    }
+
+    private static string NormalizeLineEndingsForDisplay(string text)
+    {
+        return text
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Replace("\n", Environment.NewLine, StringComparison.Ordinal);
     }
 }

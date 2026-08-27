@@ -25,6 +25,13 @@ internal static class MessageProtocol
     internal const string RateLimited = "rate_limited";
     internal const string Busy = "busy";
     internal const string Chat = "chat";
+    internal const string AttachmentOffer = "attachment_offer";
+    internal const string AttachmentAccept = "attachment_accept";
+    internal const string AttachmentReject = "attachment_reject";
+    internal const string AttachmentChunk = "attachment_chunk";
+    internal const string AttachmentComplete = "attachment_complete";
+    internal const string AttachmentResult = "attachment_result";
+    internal const string AttachmentCancel = "attachment_cancel";
     internal const string Encrypted = "encrypted";
     internal const string Ping = "ping";
     internal const string Pong = "pong";
@@ -118,6 +125,12 @@ internal static class MessageProtocol
             || envelope.Timestamp is not null
             || envelope.Reason is not null
             || envelope.PublicKey is not null
+            || envelope.TransferId is not null
+            || envelope.FileName is not null
+            || envelope.ContentType is not null
+            || envelope.FileSize is not null
+            || envelope.Sha256 is not null
+            || envelope.ChunkIndex is not null
             || !TryDecodeBase64(envelope.Data, out byte[] ciphertext))
         {
             return false;

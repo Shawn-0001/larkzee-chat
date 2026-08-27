@@ -49,6 +49,9 @@ internal sealed class SmokeSuite
         await RunCaseAsync("initial state, listener enable, and disable", TestInitialStateAndListenerAsync);
         await RunCaseAsync("initial main-window state", TestInitialMainWindowStateAsync);
         await RunCaseAsync("main-window visual structure and bounded bubbles", TestMainWindowVisualStructureAsync);
+        await RunCaseAsync("long text bubble measurement and resize regression", TestLongTextBubbleMeasurementAsync);
+        await RunCaseAsync("emoji picker and attachment bubble structure", TestAttachmentUiStructureAsync);
+        await RunCaseAsync("emoji pack storage round-trip and safe management", TestEmojiPackStorageAsync);
         await RunCaseAsync("message retention count and disk boundary", TestMessageRetentionCountAsync);
         await RunCaseAsync("message retention text budget", TestMessageRetentionTextBudgetAsync);
         await RunCaseAsync("message retention receipt age", TestMessageRetentionReceiptAgeAsync);
@@ -63,6 +66,10 @@ internal sealed class SmokeSuite
         await RunCaseAsync("encrypted sequence replay and skip are rejected", TestEncryptedSequenceValidationAsync);
         await RunCaseAsync("encrypted sequence and reconnect key material are fresh", TestEncryptedSequenceAndReconnectAsync);
         await RunCaseAsync("clean connection, UTF-8 chat, busy rejection, and disconnect", TestChatAndConnectionLifecycleAsync);
+        await RunCaseAsync("accepted attachment streams directly, verifies hash, and leaves no partial file", TestAcceptedAttachmentTransferAsync);
+        await RunCaseAsync("attachment rejection and cancellation leave no destination or partial file", TestAttachmentRejectAndCancelAsync);
+        await RunCaseAsync("image transfer auto-accepts in memory and leaves no file artifacts", TestImageTransferAsync);
+        await RunCaseAsync("sticker transfer auto-accepts in memory and leaves no file artifacts", TestStickerTransferAsync);
         await RunCaseAsync("disabling the listener closes an inbound session", TestDisableListenerDisconnectsInboundAsync);
         await RunCaseAsync("manual password changes preserve current session and affect future handshakes", TestManualPasswordChangeAsync);
 
@@ -329,23 +336,29 @@ internal sealed class SmokeSuite
                 Assert(form.ClientSize == new Size(720, 620), "main window must default to 720x620 client size");
                 Assert(form.MinimumSize == new Size(560, 450), "main window minimum size must be 560x450");
 
-                Panel header = controls.OfType<Panel>().Single(panel => panel.AccessibleName == "聊天标题栏");
-                Assert(header.Height == 70 && header.BackColor == Color.White,
-                    "header must be a 70px white panel");
+                Panel header = controls.OfType<Panel>().Single(panel => panel.AccessibleName == "连接工具栏");
+                Assert(header.Height == 52 && header.BackColor == Color.White,
+                    "header must be a 52px white utility toolbar");
                 Panel composer = controls.OfType<Panel>().Single(panel => panel.AccessibleName == "消息编辑区");
                 Assert(composer.Height == 128 && composer.BackColor == Color.White,
                     "composer must be a 128px white panel");
                 Panel headerDivider = controls.OfType<Panel>().Single(panel => panel.AccessibleName == "页眉分隔线");
                 Assert(headerDivider.Height == 1 && headerDivider.BackColor == Color.FromArgb(220, 225, 232),
                     "header divider must use #DCE1E8");
-                Label title = controls.OfType<Label>().Single(label => label.AccessibleName == "聊天标题");
-                Assert(title.ForeColor == Color.FromArgb(24, 34, 48),
-                    "window title must use #182230");
+                Assert(!controls.OfType<Label>().Any(label => label.AccessibleName == "聊天标题"),
+                    "client header must not render a product title block");
+                RoundedBorderPanel statusPill = controls.OfType<RoundedBorderPanel>()
+                    .Single(panel => panel.AccessibleName == "连接状态胶囊");
+                Assert(statusPill.Size == new Size(84, 28)
+                    && statusPill.CornerRadius == 14
+                    && statusPill.BackColor == Color.FromArgb(241, 244, 248),
+                    "disconnected state must use a compact neutral status pill");
                 Button settingsButton = controls.OfType<Button>().Single(button => button.AccessibleName == "打开配置");
-                Assert(settingsButton.Text == "⚙ 配置" && settingsButton.Size == new Size(84, 32),
-                    "header must expose the approved quiet 84x32 settings action");
+                Assert(settingsButton.Text == "⚙ 配置" && settingsButton.Size == new Size(72, 28),
+                    "header must expose the approved quiet 72x28 settings action");
                 Button connectionButton = controls.OfType<Button>().Single(button => button.AccessibleName == "连接或断开连接");
                 Assert(connectionButton.Text == "连接"
+                    && connectionButton.Size == new Size(78, 28)
                     && connectionButton.BackColor == Color.FromArgb(24, 119, 210)
                     && connectionButton.ForeColor == Color.White
                     && connectionButton.FlatAppearance.BorderSize == 0,
@@ -361,6 +374,9 @@ internal sealed class SmokeSuite
                     && connectionButton.ForeColor == Color.FromArgb(163, 58, 58)
                     && connectionButton.FlatAppearance.BorderSize == 1,
                     "connected state must use a quiet red-text disconnect action");
+                Assert(statusPill.BackColor == Color.FromArgb(236, 248, 241)
+                    && statusPill.BorderColor == Color.FromArgb(201, 233, 214),
+                    "connected state must tint the compact status pill green");
                 applyConnectionState.Invoke(form, [false]);
 
                 BufferedFlowLayoutPanel feed = controls.OfType<BufferedFlowLayoutPanel>().Single();
@@ -387,8 +403,9 @@ internal sealed class SmokeSuite
                     .Single(panel => panel.AccessibleName == "圆角消息输入框");
                 Assert(inputFrame.Region is null && inputFrame.UsesVisualOnlyRounding,
                     "rounded input frame must not use a native Region");
-                Assert(sendButton.Parent is Panel actionBar
-                    && actionBar.Parent == inputFrame
+                Panel actionBar = sendButton.Parent as Panel
+                    ?? throw new InvalidOperationException("Send action bar was not found");
+                Assert(actionBar.Parent == inputFrame
                     && actionBar.Dock == DockStyle.Bottom
                     && sendButton.Bounds.Right == actionBar.ClientSize.Width,
                     "send button must live at the bottom-right inside the rounded editor");
@@ -396,12 +413,25 @@ internal sealed class SmokeSuite
                 Assert(sendButton.BackColor == Color.FromArgb(24, 119, 210),
                     "send button must use #1877D2");
                 Assert(sendButton.AccessibleName == "发送消息", "send button must have an accessible name");
+                Button emojiButton = controls.OfType<Button>().Single(button => button.AccessibleName == "选择表情");
+                Button imageButton = controls.OfType<Button>().Single(button => button.AccessibleName == "发送图片");
+                Button fileButton = controls.OfType<Button>().Single(button => button.AccessibleName == "发送文件");
+                Assert(emojiButton.Text == "表情" && emojiButton.Enabled,
+                    "emoji picker must remain available for disconnected drafts");
+                Assert(imageButton.Text == "图片" && fileButton.Text == "文件"
+                    && !imageButton.Enabled && !fileButton.Enabled,
+                    "image and file actions must remain disabled until a peer connects");
+                Assert(emojiButton.Parent == actionBar
+                    && imageButton.Parent == actionBar
+                    && fileButton.Parent == actionBar
+                    && fileButton.Right < sendButton.Left,
+                    "attachment actions must fit on the left without overlapping Send");
 
                 MethodInfo addMessage = typeof(MainForm).GetMethod(
                     "AddMessage",
                     BindingFlags.Instance | BindingFlags.NonPublic)
                     ?? throw new InvalidOperationException("AddMessage was not found");
-                addMessage.Invoke(form, ["incoming\nmultiline", "12:34", false]);
+                addMessage.Invoke(form, ["incoming\rmultiline\r\nthird", "12:34", false]);
                 addMessage.Invoke(form, ["outgoing", "12:35", true]);
                 addMessage.Invoke(form, [new string('界', 8_000), "12:36", false]);
                 addMessage.Invoke(form, [new string('x', 8_000), "12:37", true]);
@@ -415,6 +445,19 @@ internal sealed class SmokeSuite
                     "the visible feed must contain the five synthetic messages");
                 ChatMessageControl incoming = (ChatMessageControl)feed.Controls[0];
                 ChatMessageControl outgoing = (ChatMessageControl)feed.Controls[1];
+                RichTextBox incomingBody = Descendants(incoming)
+                    .OfType<RichTextBox>()
+                    .Single(textBox => textBox.AccessibleName == "消息正文");
+                Assert(incomingBody.ReadOnly
+                    && incomingBody.Multiline
+                    && incomingBody.ShortcutsEnabled
+                    && incomingBody.Cursor == Cursors.IBeam,
+                    "message text must be selectable and copyable without being editable");
+                Assert(incomingBody.Lines.SequenceEqual(["incoming", "multiline", "third"]),
+                    "message display must normalize lone CR and CRLF into three visible lines");
+                incomingBody.Select(0, "incoming".Length);
+                Assert(incomingBody.SelectedText == "incoming",
+                    "message text control must expose a selectable text range for copying");
                 Assert(incoming.BubbleBackColor == Color.White
                     && incoming.BubbleBorderColor == Color.FromArgb(225, 229, 234)
                     && incoming.BubbleCornerRadius is >= 10 and <= 12,
@@ -461,6 +504,12 @@ internal sealed class SmokeSuite
                                 && label.Bounds.Bottom <= bubble.ClientSize.Height,
                                 $"message label must remain fully inside its bubble on resize pass {pass}");
                         }
+                        RichTextBox messageBody = bubble.Controls
+                            .OfType<RichTextBox>()
+                            .Single();
+                        Assert(messageBody.Bounds.Right <= bubble.ClientSize.Width
+                            && messageBody.Bounds.Bottom <= bubble.ClientSize.Height,
+                            $"message body must remain fully inside its bubble on resize pass {pass}");
                     }
                 }
 
@@ -516,6 +565,272 @@ internal sealed class SmokeSuite
                 }
             }
         }).ConfigureAwait(false);
+    }
+
+    private static async Task TestLongTextBubbleMeasurementAsync()
+    {
+        await RunOnStaThreadAsync(() =>
+        {
+            const string explicitLines = "第一行：中文换行测试\r\n第二行：ASCII wrapping test\r第三行：";
+            string message = explicitLines + new string('界', 900) + "\n最后一行必须完整显示";
+            using var control = new ChatMessageControl(message, "12:34", isOwnMessage: true)
+            {
+                Width = 360
+            };
+            control.CreateControl();
+            control.PerformLayout();
+
+            RichTextBox body = Descendants(control)
+                .OfType<RichTextBox>()
+                .Single(textBox => textBox.AccessibleName == "消息正文");
+
+            void AssertFullyMeasured(string phase)
+            {
+                body.CreateControl();
+                body.PerformLayout();
+                Point end = body.GetPositionFromCharIndex(body.TextLength);
+                Assert(body.ScrollBars == RichTextBoxScrollBars.None,
+                    $"long message must not create an inner scrollbar during {phase}");
+                Assert(end.Y + body.Font.Height <= body.ClientSize.Height,
+                    $"last line must fit inside the RichTextBox during {phase} "
+                    + $"(endY={end.Y}, fontHeight={body.Font.Height}, height={body.ClientSize.Height})");
+                Assert(body.Bottom <= control.BubbleBounds.Bottom,
+                    $"message body must fit inside its bubble during {phase}");
+            }
+
+            Assert(body.Lines.Length >= 3
+                && body.Lines[0].StartsWith("第一行", StringComparison.Ordinal)
+                && body.Lines[^1].EndsWith("最后一行必须完整显示", StringComparison.Ordinal),
+                "explicit CR, CRLF, and LF lines must remain visible in order");
+            AssertFullyMeasured("initial insertion");
+
+            foreach (int width in new[] { 260, 520, 320, 640, 360 })
+            {
+                control.Width = width;
+                control.PerformLayout();
+                Application.DoEvents();
+                AssertFullyMeasured($"parent resize to {width}px");
+            }
+        }).ConfigureAwait(false);
+    }
+
+    private static async Task TestAttachmentUiStructureAsync()
+    {
+        string temporaryRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"LarkzeeChat-attachment-ui-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temporaryRoot);
+        string previewPath = Path.Combine(temporaryRoot, "preview.png");
+        using (var preview = new Bitmap(80, 48))
+        using (Graphics graphics = Graphics.FromImage(preview))
+        {
+            graphics.Clear(Color.CornflowerBlue);
+            preview.Save(previewPath, ImageFormat.Png);
+        }
+
+        try
+        {
+            await RunOnStaThreadAsync(async () =>
+            {
+                var emojiService = new EmojiPackService(
+                    Path.Combine(temporaryRoot, "emoji-packs"));
+                EmojiPackImportResult import = emojiService.ImportFiles([previewPath]);
+                Assert(import.ImportedStickers.Count == 1,
+                    "UI fixture must import one valid sticker into the injected pack root");
+
+                using var picker = new EmojiPickerForm(emojiService);
+                picker.Show();
+                await WaitUntilAsync(
+                    () => Descendants(picker).OfType<Button>().Any(button =>
+                        button.AccessibleName == "发送表情 preview" && button.Image is not null),
+                    "emoji picker cache thumbnails").ConfigureAwait(true);
+                List<Button> emojiButtons = Descendants(picker)
+                    .OfType<Button>()
+                    .Where(button => button.AccessibleName?.StartsWith(
+                        "插入表情 ",
+                        StringComparison.Ordinal) == true)
+                    .ToList();
+                Assert(emojiButtons.Count == 40
+                    && emojiButtons.All(button =>
+                        button.AccessibleName?.StartsWith("插入表情 ", StringComparison.Ordinal) == true),
+                    "emoji picker must expose 40 keyboard-accessible common emoji buttons");
+                Assert(Descendants(picker).OfType<TabPage>().Any(page => page.Text == "我的表情")
+                    && Descendants(picker).OfType<ComboBox>().Any(combo => combo.AccessibleName == "选择表情包")
+                    && Descendants(picker).OfType<Button>().Any(button => button.AccessibleName == "导入表情包文件夹")
+                    && Descendants(picker).OfType<Button>().Any(button => button.AccessibleName == "导出当前表情包")
+                    && Descendants(picker).OfType<Button>().Any(button => button.AccessibleName == "删除当前表情包"),
+                    "custom emoji picker must expose pack selection and management controls");
+                picker.ClientSize = new Size(420, 340);
+                picker.PerformLayout();
+                foreach (Button managementButton in Descendants(picker).OfType<Button>()
+                        .Where(button => button.AccessibleName is "导入表情包文件夹"
+                             or "导出当前表情包"
+                             or "删除当前表情包"
+                             ))
+                {
+                    Assert(managementButton.Bounds.Width > 0
+                        && managementButton.Bounds.Height > 0
+                        && managementButton.Right <= managementButton.Parent!.ClientSize.Width
+                        && managementButton.Bottom <= managementButton.Parent.ClientSize.Height,
+                        "custom emoji management buttons must remain inside the picker at minimum width");
+                }
+                Button stickerButton = Descendants(picker).OfType<Button>()
+                    .Single(button => button.AccessibleName == "发送表情 preview");
+                Assert(stickerButton.Image is not null,
+                    "custom emoji picker must render an imported sticker thumbnail");
+                string? pickerPreviewPath =
+                    Environment.GetEnvironmentVariable("LARKZEE_CHAT_EMOJI_PICKER_PREVIEW_PATH");
+                if (!string.IsNullOrWhiteSpace(pickerPreviewPath))
+                {
+                    TabControl tabs = Descendants(picker).OfType<TabControl>().Single();
+                    picker.StartPosition = FormStartPosition.Manual;
+                    picker.Location = new Point(-2000, -2000);
+                    Application.DoEvents();
+                    tabs.SelectedIndex = 1;
+                    Application.DoEvents();
+                    picker.CreateControl();
+                    picker.PerformLayout();
+                    using var rendered = new Bitmap(picker.Width, picker.Height);
+                    picker.DrawToBitmap(rendered, new Rectangle(Point.Empty, rendered.Size));
+                    rendered.Save(pickerPreviewPath, ImageFormat.Png);
+                    picker.Hide();
+                }
+                picker.Close();
+
+                using var attachment = new AttachmentMessageControl(
+                    Guid.NewGuid().ToString("N"),
+                    "preview.png",
+                    "image/png",
+                    new FileInfo(previewPath).Length,
+                    isOwnMessage: true,
+                    "12:40")
+                {
+                    Width = 600
+                };
+                attachment.CreateControl();
+                attachment.PerformLayout();
+                Assert(attachment.BubbleBounds.Left > 0
+                    && attachment.BubbleBounds.Right <= attachment.ClientSize.Width,
+                    "outgoing attachment bubble must align right and stay within its row");
+                ProgressBar progress = Descendants(attachment).OfType<ProgressBar>().Single();
+                Button openFolder = Descendants(attachment)
+                    .OfType<Button>()
+                    .Single(button => button.AccessibleName == "打开附件所在文件夹");
+                Assert(progress.Visible && !openFolder.Visible,
+                    "active attachment must show progress and hide the folder action");
+
+                attachment.ShowLocalPreview(previewPath);
+                PictureBox picture = Descendants(attachment).OfType<PictureBox>().Single();
+                Assert(picture.Visible && picture.Image is not null,
+                    "outgoing image attachment must render a bounded local preview");
+                attachment.UpdateProgress(100, 100, AttachmentTransferStage.Verifying);
+                attachment.Complete(
+                    succeeded: true,
+                    AttachmentTransferStage.Completed,
+                    "发送完成，对方校验通过。",
+                    previewPath);
+                Assert(!progress.Visible
+                    && openFolder.Visible
+                    && attachment.Stage == AttachmentTransferStage.Completed,
+                    "verified attachment must replace progress with the open-folder action");
+
+                using var sticker = new StickerMessageControl(
+                    Guid.NewGuid().ToString("N"),
+                    "preview.png",
+                    "image/png",
+                    isOwnMessage: true,
+                    "12:41")
+                {
+                    Width = 600
+                };
+                sticker.CreateControl();
+                sticker.PerformLayout();
+                sticker.ShowLocalPreview(previewPath);
+                File.Delete(previewPath);
+                PictureBox stickerPicture = Descendants(sticker).OfType<PictureBox>().Single();
+                Assert(stickerPicture.Visible
+                    && stickerPicture.Image is not null
+                    && sticker.HasPreview,
+                    "sticker bubble must load local bytes without locking the source file");
+                sticker.Complete(
+                    succeeded: true,
+                    AttachmentTransferStage.Completed,
+                    "表情发送完成，对方校验通过。",
+                    contentBytes: default);
+                Assert(sticker.Stage == AttachmentTransferStage.Completed,
+                    "sticker bubble must expose the completed transfer stage");
+
+                byte[] inlineImageBytes =
+                    Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAADUlEQVR42mNk+M/wHwAF/gL+J7mR7wAAAABJRU5ErkJggg==");
+                using var inlineImage = new StickerMessageControl(
+                    Guid.NewGuid().ToString("N"),
+                    "inline-image.png",
+                    "image/png",
+                    isOwnMessage: false,
+                    "12:42",
+                    isInlineImage: true)
+                {
+                    Width = 600
+                };
+                inlineImage.CreateControl();
+                inlineImage.PerformLayout();
+                inlineImage.ShowVerifiedPreview(inlineImageBytes);
+                inlineImage.Complete(
+                    succeeded: true,
+                    AttachmentTransferStage.Completed,
+                    "图片接收完成，校验通过。",
+                    contentBytes: inlineImageBytes);
+                Label inlineStatus = Descendants(inlineImage)
+                    .OfType<Label>()
+                    .Single(label => label.AccessibleName == "图片传输状态");
+                ContextMenuStrip inlineMenu = Descendants(inlineImage)
+                    .Where(control => control.ContextMenuStrip is not null)
+                    .Select(control => control.ContextMenuStrip!)
+                    .Distinct()
+                    .Single(menu => menu.AccessibleName == "图片操作");
+                Assert(inlineImage.IsInlineImage
+                    && inlineImage.HasPreview
+                    && inlineImage.HasContentBytes
+                    && !inlineStatus.Visible
+                    && inlineMenu.Items.OfType<ToolStripMenuItem>().Any(item =>
+                        item.AccessibleName == "另存为图片"),
+                    "successful inline image bubbles must hide status and expose right-click Save As");
+
+                string? attachmentPreviewPath =
+                    Environment.GetEnvironmentVariable("LARKZEE_CHAT_ATTACHMENT_PREVIEW_PATH");
+                if (!string.IsNullOrWhiteSpace(attachmentPreviewPath))
+                {
+                    using var rendered = new Bitmap(attachment.Width, attachment.Height);
+                    attachment.DrawToBitmap(rendered, new Rectangle(Point.Empty, rendered.Size));
+                    rendered.Save(attachmentPreviewPath, ImageFormat.Png);
+                }
+
+                string? stickerPreviewPath =
+                    Environment.GetEnvironmentVariable("LARKZEE_CHAT_STICKER_PREVIEW_PATH");
+                if (!string.IsNullOrWhiteSpace(stickerPreviewPath))
+                {
+                    using var rendered = new Bitmap(sticker.Width, sticker.Height);
+                    sticker.DrawToBitmap(rendered, new Rectangle(Point.Empty, rendered.Size));
+                    rendered.Save(stickerPreviewPath, ImageFormat.Png);
+                }
+
+                string? inlineImagePreviewPath =
+                    Environment.GetEnvironmentVariable("LARKZEE_CHAT_INLINE_IMAGE_PREVIEW_PATH");
+                if (!string.IsNullOrWhiteSpace(inlineImagePreviewPath))
+                {
+                    using var rendered = new Bitmap(inlineImage.Width, inlineImage.Height);
+                    inlineImage.DrawToBitmap(rendered, new Rectangle(Point.Empty, rendered.Size));
+                    rendered.Save(inlineImagePreviewPath, ImageFormat.Png);
+                }
+            }).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (Directory.Exists(temporaryRoot))
+            {
+                Directory.Delete(temporaryRoot, recursive: true);
+            }
+        }
     }
 
     private static async Task TestMessageRetentionCountAsync()
@@ -1361,6 +1676,535 @@ internal sealed class SmokeSuite
         finally
         {
             await DisposeGroupAsync(freshKeyClient, oldKeyClient, client, server).ConfigureAwait(false);
+        }
+    }
+
+    private static Task TestEmojiPackStorageAsync()
+    {
+        string temporaryRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"LarkzeeChat-emoji-pack-{Guid.NewGuid():N}");
+        string sourceRoot = Path.Combine(temporaryRoot, "sources");
+        string folderRoot = Path.Combine(sourceRoot, "中文表情包");
+        Directory.CreateDirectory(folderRoot);
+        string pngPath = Path.Combine(sourceRoot, "笑脸.png");
+        string gifPath = Path.Combine(sourceRoot, "动图.gif");
+        string invalidPath = Path.Combine(sourceRoot, "坏文件.png");
+        string oversizedPath = Path.Combine(sourceRoot, "超大.png");
+        WriteTestImage(pngPath, ImageFormat.Png, Color.CornflowerBlue);
+        WriteTestImage(gifPath, ImageFormat.Gif, Color.Orange);
+        WriteTestImage(Path.Combine(folderRoot, "文件夹表情.png"), ImageFormat.Png, Color.MediumSeaGreen);
+        File.WriteAllText(invalidPath, "not an image", new UTF8Encoding(false));
+        File.WriteAllBytes(
+            oversizedPath,
+            new byte[checked((int)EmojiPackService.MaximumStickerBytes + 1)]);
+
+        try
+        {
+            var service = new EmojiPackService(Path.Combine(temporaryRoot, "EmojiPacks"));
+            EmojiPackImportResult imported = service.ImportFiles(
+                [pngPath, gifPath, invalidPath, oversizedPath],
+                "自定义测试");
+            Assert(imported.Pack is not null
+                && imported.ImportedStickers.Count == 2
+                && imported.RejectedFiles.Count == 2,
+                "emoji pack import must accept valid PNG/GIF and reject invalid or oversized files");
+            EmojiPack pack = imported.Pack!;
+            string packMetadataPath = Path.Combine(service.RootPath, pack.FolderName, "pack.json");
+            byte[] metadataBytes = File.ReadAllBytes(packMetadataPath);
+            Assert(metadataBytes.Length < 3
+                || metadataBytes[0] != 0xEF
+                || metadataBytes[1] != 0xBB
+                || metadataBytes[2] != 0xBF,
+                "emoji pack metadata must be UTF-8 without a BOM");
+            string metadata = new UTF8Encoding(false, true).GetString(metadataBytes);
+            using JsonDocument metadataDocument = JsonDocument.Parse(metadata);
+            Assert(metadataDocument.RootElement.TryGetProperty("Name", out JsonElement packName)
+                && packName.GetString() == "自定义测试",
+                "emoji pack metadata must preserve UTF-8 pack names");
+
+            EmojiSticker importedPng = pack.Stickers.Single(sticker =>
+                string.Equals(sticker.ContentType, "image/png", StringComparison.Ordinal));
+            string importedPath = service.GetStickerPath(pack.Id, importedPng.Id);
+            Assert(File.Exists(importedPath),
+                "imported sticker must be copied into the managed storage root");
+            File.Delete(pngPath);
+            Assert(File.Exists(importedPath),
+                "deleting the original source must not remove the imported copy");
+
+            string exportRoot = Path.Combine(temporaryRoot, "exports");
+            int exportedCount = service.ExportPack(pack.Id, exportRoot);
+            string exportDirectory = Path.Combine(exportRoot, "自定义测试");
+            Assert(exportedCount == 2
+                && Directory.Exists(exportDirectory)
+                && Directory.EnumerateFiles(exportDirectory, "*", SearchOption.TopDirectoryOnly).Count() == 2,
+                "emoji pack export must copy the managed cached files to the selected directory");
+
+            EmojiPackImportResult folderImport = service.ImportFolder(folderRoot);
+            Assert(folderImport.Pack is not null
+                && folderImport.Pack.Name == "中文表情包"
+                && folderImport.ImportedStickers.Count == 1,
+                "folder import must create a named pack from its directory name");
+            string folderDirectory = Path.Combine(service.RootPath, folderImport.Pack!.FolderName);
+            Assert(service.DeletePack(folderImport.Pack.Id)
+                && !Directory.Exists(folderDirectory),
+                "deleting a pack must remove only its generated safe folder");
+            Assert(!service.DeletePack("../outside"),
+                "pack deletion must reject an unsafe non-identifier path");
+        }
+        finally
+        {
+            if (Directory.Exists(temporaryRoot))
+            {
+                Directory.Delete(temporaryRoot, recursive: true);
+            }
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static async Task TestImageTransferAsync()
+    {
+        string temporaryRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"LarkzeeChat-image-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temporaryRoot);
+        string sourcePath = Path.Combine(temporaryRoot, "发送图片.png");
+        string oversizedPath = Path.Combine(temporaryRoot, "超大图片.png");
+        WriteTestImage(sourcePath, ImageFormat.Png, Color.CornflowerBlue);
+        using (FileStream oversized = new(
+                   oversizedPath,
+                   FileMode.Create,
+                   FileAccess.Write,
+                   FileShare.None))
+        {
+            oversized.SetLength(ChatSessionManager.MaximumInlineImageBytes + 1);
+        }
+
+        byte[] sourceBytes = await File.ReadAllBytesAsync(sourcePath).ConfigureAwait(false);
+        ChatSessionManager? receiver = null;
+        ChatSessionManager? sender = null;
+        try
+        {
+            receiver = new ChatSessionManager();
+            ServerStartResult start = await EnableAsync(receiver).ConfigureAwait(false);
+            Assert(start.Succeeded, "image receiver must enable its listener");
+            sender = new ChatSessionManager();
+            ConnectResult connect = await ConnectAsync(sender, RequireKey(receiver, start)).ConfigureAwait(false);
+            Assert(connect.Succeeded, "image sender must connect");
+            await WaitUntilAsync(
+                () => receiver.IsConnected && sender.IsConnected,
+                "image peers connected").ConfigureAwait(false);
+
+            var accepted = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var receivedCompletion = new TaskCompletionSource<AttachmentTransferCompletedEventArgs>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            receiver.AttachmentOffered += (_, args) =>
+            {
+                if (!args.IsInlineImage
+                    || args.IsSticker
+                    || args.ContentType != "image/png")
+                {
+                    receivedCompletion.TrySetException(new InvalidOperationException(
+                        "image offer must be marked as an inline PNG"));
+                    return;
+                }
+
+                _ = AcceptImageAsync(args.TransferId);
+            };
+            receiver.AttachmentTransferCompleted += (_, args) =>
+            {
+                if (args.IsIncoming)
+                {
+                    receivedCompletion.TrySetResult(args);
+                }
+            };
+
+            async Task AcceptImageAsync(string transferId)
+            {
+                try
+                {
+                    accepted.TrySetResult(await receiver.AcceptIncomingImageAsync(transferId)
+                        .ConfigureAwait(false));
+                }
+                catch (Exception exception)
+                {
+                    accepted.TrySetException(exception);
+                }
+            }
+
+            AttachmentSendResult sendResult = await sender.SendImageAsync(sourcePath, "image/png")
+                .WaitAsync(TimeSpan.FromSeconds(15))
+                .ConfigureAwait(false);
+            Assert(await accepted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false),
+                "receiver must auto-accept the image in memory");
+            AttachmentTransferCompletedEventArgs completion = await receivedCompletion.Task
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            Assert(sendResult.Succeeded
+                && sendResult.IsInlineImage
+                && !sendResult.IsSticker
+                && sendResult.Stage == AttachmentTransferStage.Completed,
+                "sender must receive a successful inline-image completion");
+            Assert(completion.Succeeded
+                && completion.IsInlineImage
+                && !completion.IsSticker
+                && completion.Stage == AttachmentTransferStage.Completed
+                && completion.LocalPath is null
+                && completion.HasContentBytes
+                && completion.ContentBytes.Span.SequenceEqual(sourceBytes),
+                "receiver must expose verified image bytes without a destination path");
+            Assert(!Directory.EnumerateFiles(temporaryRoot, "*.part", SearchOption.AllDirectories).Any(),
+                "in-memory image receipt must leave no partial file");
+
+            AttachmentSendResult oversizedResult = await sender.SendImageAsync(
+                    oversizedPath,
+                    "image/png")
+                .WaitAsync(TimeSpan.FromSeconds(10))
+                .ConfigureAwait(false);
+            Assert(!oversizedResult.Succeeded
+                && oversizedResult.IsInlineImage
+                && oversizedResult.Stage == AttachmentTransferStage.Failed,
+                "an inline image over 25 MiB must be rejected before transfer");
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(sourceBytes);
+            await DisposeGroupAsync(sender, receiver).ConfigureAwait(false);
+            if (Directory.Exists(temporaryRoot))
+            {
+                Directory.Delete(temporaryRoot, recursive: true);
+            }
+        }
+    }
+
+    private static async Task TestStickerTransferAsync()
+    {
+        string temporaryRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"LarkzeeChat-sticker-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temporaryRoot);
+        string sourcePath = Path.Combine(temporaryRoot, "发送表情.png");
+        WriteTestImage(sourcePath, ImageFormat.Png, Color.MediumPurple);
+        byte[] sourceBytes = await File.ReadAllBytesAsync(sourcePath).ConfigureAwait(false);
+
+        ChatSessionManager? receiver = null;
+        ChatSessionManager? sender = null;
+        try
+        {
+            receiver = new ChatSessionManager();
+            ServerStartResult start = await EnableAsync(receiver).ConfigureAwait(false);
+            Assert(start.Succeeded, "sticker receiver must enable its listener");
+            sender = new ChatSessionManager();
+            ConnectResult connect = await ConnectAsync(sender, RequireKey(receiver, start)).ConfigureAwait(false);
+            Assert(connect.Succeeded, "sticker sender must connect");
+            await WaitUntilAsync(
+                () => receiver.IsConnected && sender.IsConnected,
+                "sticker peers connected").ConfigureAwait(false);
+
+            var offerSeen = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var accepted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var receivedCompletion = new TaskCompletionSource<AttachmentTransferCompletedEventArgs>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            receiver.AttachmentOffered += (_, args) =>
+            {
+                if (!args.IsSticker)
+                {
+                    offerSeen.TrySetException(new InvalidOperationException(
+                        "sticker offer must be marked IsSticker"));
+                    return;
+                }
+
+                offerSeen.TrySetResult(true);
+                _ = AcceptStickerAsync(args.TransferId);
+            };
+            receiver.AttachmentTransferCompleted += (_, args) =>
+            {
+                if (args.IsIncoming)
+                {
+                    receivedCompletion.TrySetResult(args);
+                }
+            };
+
+            async Task AcceptStickerAsync(string transferId)
+            {
+                try
+                {
+                    accepted.TrySetResult(await receiver.AcceptIncomingStickerAsync(transferId)
+                        .ConfigureAwait(false));
+                }
+                catch (Exception exception)
+                {
+                    accepted.TrySetException(exception);
+                }
+            }
+
+            AttachmentSendResult sendResult = await sender.SendStickerAsync(sourcePath)
+                .WaitAsync(TimeSpan.FromSeconds(15))
+                .ConfigureAwait(false);
+            Assert(await offerSeen.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false),
+                "receiver must see an incoming sticker offer");
+            Assert(await accepted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false),
+                "receiver must auto-accept the sticker in memory");
+            AttachmentTransferCompletedEventArgs completion = await receivedCompletion.Task
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            Assert(sendResult.Succeeded
+                && sendResult.IsSticker
+                && sendResult.Stage == AttachmentTransferStage.Completed,
+                "sender must receive a successful sticker completion");
+            Assert(completion.Succeeded
+                && completion.IsSticker
+                && completion.Stage == AttachmentTransferStage.Completed
+                && completion.LocalPath is null
+                && completion.HasContentBytes
+                && completion.ContentBytes.Span.SequenceEqual(sourceBytes),
+                "receiver must expose verified sticker bytes without a destination path");
+            Assert(!Directory.EnumerateFiles(temporaryRoot, "*.part", SearchOption.AllDirectories).Any()
+                && Directory.EnumerateFiles(temporaryRoot, "*", SearchOption.AllDirectories)
+                    .All(path => string.Equals(path, sourcePath, StringComparison.OrdinalIgnoreCase)),
+                "in-memory sticker receipt must leave no partial or destination file");
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(sourceBytes);
+            await DisposeGroupAsync(sender, receiver).ConfigureAwait(false);
+            if (Directory.Exists(temporaryRoot))
+            {
+                Directory.Delete(temporaryRoot, recursive: true);
+            }
+        }
+    }
+
+    private static void WriteTestImage(string path, ImageFormat format, Color color)
+    {
+        using var image = new Bitmap(80, 48);
+        using (Graphics graphics = Graphics.FromImage(image))
+        {
+            graphics.Clear(color);
+        }
+
+        image.Save(path, format);
+    }
+
+    private static async Task TestAcceptedAttachmentTransferAsync()
+    {
+        string temporaryRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"LarkzeeChat-attachment-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temporaryRoot);
+        string sourcePath = Path.Combine(temporaryRoot, "发送文件-测试.bin");
+        string destinationDirectory = Path.Combine(temporaryRoot, "received");
+        Directory.CreateDirectory(destinationDirectory);
+        string destinationPath = Path.Combine(destinationDirectory, "接收文件-测试.bin");
+        byte[] sourceBytes = RandomNumberGenerator.GetBytes((ChatSessionManager.AttachmentChunkBytes * 3) + 731);
+        await File.WriteAllBytesAsync(sourcePath, sourceBytes).ConfigureAwait(false);
+
+        ChatSessionManager? receiver = null;
+        ChatSessionManager? sender = null;
+        try
+        {
+            receiver = new ChatSessionManager();
+            ServerStartResult start = await EnableAsync(receiver).ConfigureAwait(false);
+            Assert(start.Succeeded, "attachment receiver must enable its listener");
+            sender = new ChatSessionManager();
+            ConnectResult connect = await ConnectAsync(sender, RequireKey(receiver, start)).ConfigureAwait(false);
+            Assert(connect.Succeeded, "attachment sender must connect");
+            await WaitUntilAsync(
+                () => receiver.IsConnected && sender.IsConnected,
+                "attachment peers connected").ConfigureAwait(false);
+
+            var accepted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var receivedCompletion = new TaskCompletionSource<AttachmentTransferCompletedEventArgs>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            long receivedProgress = 0;
+            receiver.AttachmentOffered += (_, args) =>
+            {
+                _ = AcceptOfferAsync(args.TransferId);
+            };
+            receiver.AttachmentTransferProgressChanged += (_, args) =>
+            {
+                if (args.IsIncoming)
+                {
+                    Interlocked.Exchange(ref receivedProgress, args.BytesTransferred);
+                }
+            };
+            receiver.AttachmentTransferCompleted += (_, args) =>
+            {
+                if (args.IsIncoming)
+                {
+                    receivedCompletion.TrySetResult(args);
+                }
+            };
+
+            async Task AcceptOfferAsync(string transferId)
+            {
+                try
+                {
+                    bool result = await receiver.AcceptIncomingAttachmentAsync(
+                        transferId,
+                        destinationPath).ConfigureAwait(false);
+                    accepted.TrySetResult(result);
+                }
+                catch (Exception exception)
+                {
+                    accepted.TrySetException(exception);
+                }
+            }
+
+            AttachmentSendResult sendResult = await sender.SendAttachmentAsync(
+                    sourcePath,
+                    "application/octet-stream")
+                .WaitAsync(TimeSpan.FromSeconds(15))
+                .ConfigureAwait(false);
+            Assert(await accepted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false),
+                "receiver must accept the selected destination before chunks are sent");
+            AttachmentTransferCompletedEventArgs completion = await receivedCompletion.Task
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            Assert(sendResult.Succeeded
+                && !sendResult.IsInlineImage
+                && sendResult.Stage == AttachmentTransferStage.Completed,
+                $"sender must receive a successful verified result, got {sendResult.Stage}: {sendResult.Message}");
+            Assert(completion.Succeeded
+                && !completion.IsInlineImage
+                && completion.LocalPath == destinationPath
+                && completion.Stage == AttachmentTransferStage.Completed,
+                "receiver must report the selected final path only after verification");
+            Assert(Volatile.Read(ref receivedProgress) == sourceBytes.Length,
+                "receiver progress must reach the exact attachment length");
+            byte[] destinationBytes = await File.ReadAllBytesAsync(destinationPath).ConfigureAwait(false);
+            Assert(destinationBytes.SequenceEqual(sourceBytes),
+                "the received file must match the source byte-for-byte");
+            Assert(!Directory.EnumerateFiles(destinationDirectory, ".larkzee-*.part").Any(),
+                "successful transfer must atomically remove its same-directory partial file");
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(sourceBytes);
+            await DisposeGroupAsync(sender, receiver).ConfigureAwait(false);
+            if (Directory.Exists(temporaryRoot))
+            {
+                Directory.Delete(temporaryRoot, recursive: true);
+            }
+        }
+    }
+
+    private static async Task TestAttachmentRejectAndCancelAsync()
+    {
+        await TestRejectedAttachmentAsync().ConfigureAwait(false);
+        await TestCancelledAttachmentAsync().ConfigureAwait(false);
+    }
+
+    private static async Task TestRejectedAttachmentAsync()
+    {
+        string temporaryRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"LarkzeeChat-reject-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temporaryRoot);
+        string sourcePath = Path.Combine(temporaryRoot, "reject.bin");
+        await File.WriteAllBytesAsync(sourcePath, RandomNumberGenerator.GetBytes(1024)).ConfigureAwait(false);
+        ChatSessionManager? receiver = null;
+        ChatSessionManager? sender = null;
+        try
+        {
+            receiver = new ChatSessionManager();
+            ServerStartResult start = await EnableAsync(receiver).ConfigureAwait(false);
+            sender = new ChatSessionManager();
+            ConnectResult connect = await ConnectAsync(sender, RequireKey(receiver, start)).ConfigureAwait(false);
+            Assert(connect.Succeeded, "rejection test peers must connect");
+            receiver.AttachmentOffered += (_, args) =>
+            {
+                _ = receiver.RejectIncomingAttachmentAsync(args.TransferId, "test rejection");
+            };
+
+            AttachmentSendResult result = await sender.SendAttachmentAsync(sourcePath)
+                .WaitAsync(TimeSpan.FromSeconds(10))
+                .ConfigureAwait(false);
+            Assert(!result.Succeeded && result.Stage == AttachmentTransferStage.Rejected,
+                "sender must distinguish an explicit receiver rejection");
+            Assert(!Directory.EnumerateFiles(temporaryRoot, ".larkzee-*.part", SearchOption.AllDirectories).Any(),
+                "rejection before destination choice must not create a partial file");
+        }
+        finally
+        {
+            await DisposeGroupAsync(sender, receiver).ConfigureAwait(false);
+            if (Directory.Exists(temporaryRoot))
+            {
+                Directory.Delete(temporaryRoot, recursive: true);
+            }
+        }
+    }
+
+    private static async Task TestCancelledAttachmentAsync()
+    {
+        string temporaryRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"LarkzeeChat-cancel-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temporaryRoot);
+        string sourcePath = Path.Combine(temporaryRoot, "cancel.bin");
+        string destinationPath = Path.Combine(temporaryRoot, "cancel-received.bin");
+        await File.WriteAllBytesAsync(
+            sourcePath,
+            RandomNumberGenerator.GetBytes(ChatSessionManager.AttachmentChunkBytes * 64)).ConfigureAwait(false);
+        ChatSessionManager? receiver = null;
+        ChatSessionManager? sender = null;
+        using var sendCts = new CancellationTokenSource();
+        try
+        {
+            receiver = new ChatSessionManager();
+            ServerStartResult start = await EnableAsync(receiver).ConfigureAwait(false);
+            sender = new ChatSessionManager();
+            ConnectResult connect = await ConnectAsync(sender, RequireKey(receiver, start)).ConfigureAwait(false);
+            Assert(connect.Succeeded, "cancellation test peers must connect");
+            var receiverCompletion = new TaskCompletionSource<AttachmentTransferCompletedEventArgs>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            receiver.AttachmentOffered += (_, args) =>
+            {
+                _ = receiver.AcceptIncomingAttachmentAsync(args.TransferId, destinationPath);
+            };
+            receiver.AttachmentTransferCompleted += (_, args) =>
+            {
+                if (args.IsIncoming)
+                {
+                    receiverCompletion.TrySetResult(args);
+                }
+            };
+            sender.AttachmentTransferProgressChanged += (_, args) =>
+            {
+                if (!args.IsIncoming
+                    && args.Stage == AttachmentTransferStage.Transferring
+                    && args.BytesTransferred > 0)
+                {
+                    sendCts.Cancel();
+                }
+            };
+
+            AttachmentSendResult result = await sender.SendAttachmentAsync(
+                    sourcePath,
+                    cancellationToken: sendCts.Token)
+                .WaitAsync(TimeSpan.FromSeconds(10))
+                .ConfigureAwait(false);
+            AttachmentTransferCompletedEventArgs completion = await receiverCompletion.Task
+                .WaitAsync(TimeSpan.FromSeconds(5))
+                .ConfigureAwait(false);
+            Assert(!result.Succeeded && result.Stage == AttachmentTransferStage.Cancelled,
+                "sender cancellation must report a cancelled transfer");
+            Assert(!completion.Succeeded && completion.Stage == AttachmentTransferStage.Cancelled,
+                "receiver must observe and clean up sender cancellation");
+            Assert(!File.Exists(destinationPath),
+                "a cancelled transfer must not create the chosen final file");
+            Assert(!Directory.EnumerateFiles(temporaryRoot, ".larkzee-*.part", SearchOption.AllDirectories).Any(),
+                "a cancelled transfer must delete its same-directory partial file");
+        }
+        finally
+        {
+            await DisposeGroupAsync(sender, receiver).ConfigureAwait(false);
+            if (Directory.Exists(temporaryRoot))
+            {
+                Directory.Delete(temporaryRoot, recursive: true);
+            }
         }
     }
 

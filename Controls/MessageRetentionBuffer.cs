@@ -22,7 +22,7 @@ public sealed class MessageRetentionBuffer : IDisposable
     public IReadOnlyList<Entry> Entries => _entries.ToArray();
 
     public IReadOnlyList<Entry> Add(
-        ChatMessageControl control,
+        Control control,
         string text,
         DateTimeOffset receivedAt)
     {
@@ -77,7 +77,7 @@ public sealed class MessageRetentionBuffer : IDisposable
     }
 
     public readonly record struct Entry(
-        ChatMessageControl Control,
+        Control Control,
         string Text,
         DateTimeOffset ReceivedAt);
 }

@@ -17,7 +17,7 @@ namespace LarkzeeChat.Networking;
 /// <summary>
 /// Owns the optional IPv4 listener and the single authenticated chat session.
 /// </summary>
-public sealed class ChatSessionManager : IAsyncDisposable
+public sealed partial class ChatSessionManager : IAsyncDisposable
 {
     public const int Port = 45678;
 
@@ -867,6 +867,7 @@ public sealed class ChatSessionManager : IAsyncDisposable
                 || challengeMessage.Text is not null
                 || challengeMessage.Timestamp is not null
                 || challengeMessage.Reason is not null
+                || HasAttachmentPayload(challengeMessage)
                 || !AuthenticationService.TryDecodeBase64(
                     challengeMessage.Data,
                     ProtocolCrypto.ChallengeLength,
@@ -922,6 +923,7 @@ public sealed class ChatSessionManager : IAsyncDisposable
                 && resultMessage.Text is null
                 && resultMessage.Timestamp is null
                 && resultMessage.Reason is null
+                && !HasAttachmentPayload(resultMessage)
                 && AuthenticationService.TryDecodeBase64(
                     resultMessage.Data,
                     ProtocolCrypto.ProofLength,
@@ -1048,6 +1050,7 @@ public sealed class ChatSessionManager : IAsyncDisposable
                 && responseMessage.Text is null
                 && responseMessage.Timestamp is null
                 && responseMessage.Reason is null
+                && !HasAttachmentPayload(responseMessage)
                 && AuthenticationService.TryDecodeBase64(
                     responseMessage.Data,
                     ProtocolCrypto.ProofLength,
@@ -1157,7 +1160,8 @@ public sealed class ChatSessionManager : IAsyncDisposable
             && message.Tag is null
             && message.Text is null
             && message.Timestamp is null
-            && message.Reason is null;
+            && message.Reason is null
+            && !HasAttachmentPayload(message);
     }
 
     private bool ShouldCountAuthenticationFailure(CancellationToken listenerToken)
@@ -1228,7 +1232,10 @@ public sealed class ChatSessionManager : IAsyncDisposable
 
                 if (string.Equals(message.Type, MessageProtocol.Chat, StringComparison.OrdinalIgnoreCase))
                 {
-                    if (message.Text is null || message.Data is not null || message.Reason is not null)
+                    if (message.Text is null
+                        || message.Data is not null
+                        || message.Reason is not null
+                        || HasAttachmentPayload(message))
                     {
                         await CloseConnectionAsync(context, ConnectionClosedReason.ConnectionLost, false, false)
                             .ConfigureAwait(false);
@@ -1241,9 +1248,27 @@ public sealed class ChatSessionManager : IAsyncDisposable
                     continue;
                 }
 
+                AttachmentMessageHandlingResult attachmentResult =
+                    await HandleAttachmentMessageAsync(context, message).ConfigureAwait(false);
+                if (attachmentResult == AttachmentMessageHandlingResult.Handled)
+                {
+                    continue;
+                }
+
+                if (attachmentResult == AttachmentMessageHandlingResult.ProtocolError)
+                {
+                    await CloseConnectionAsync(context, ConnectionClosedReason.ConnectionLost, false, false)
+                        .ConfigureAwait(false);
+                    return;
+                }
+
                 if (string.Equals(message.Type, MessageProtocol.Ping, StringComparison.OrdinalIgnoreCase))
                 {
-                    if (message.Text is not null || message.Timestamp is not null || message.Data is not null || message.Reason is not null)
+                    if (message.Text is not null
+                        || message.Timestamp is not null
+                        || message.Data is not null
+                        || message.Reason is not null
+                        || HasAttachmentPayload(message))
                     {
                         await CloseConnectionAsync(context, ConnectionClosedReason.ConnectionLost, false, false)
                             .ConfigureAwait(false);
@@ -1262,7 +1287,11 @@ public sealed class ChatSessionManager : IAsyncDisposable
 
                 if (string.Equals(message.Type, MessageProtocol.Pong, StringComparison.OrdinalIgnoreCase))
                 {
-                    if (message.Text is not null || message.Timestamp is not null || message.Data is not null || message.Reason is not null)
+                    if (message.Text is not null
+                        || message.Timestamp is not null
+                        || message.Data is not null
+                        || message.Reason is not null
+                        || HasAttachmentPayload(message))
                     {
                         await CloseConnectionAsync(context, ConnectionClosedReason.ConnectionLost, false, false)
                             .ConfigureAwait(false);
@@ -1275,7 +1304,11 @@ public sealed class ChatSessionManager : IAsyncDisposable
 
                 if (string.Equals(message.Type, MessageProtocol.Disconnect, StringComparison.OrdinalIgnoreCase))
                 {
-                    if (message.Text is not null || message.Timestamp is not null || message.Data is not null || message.Reason is not null)
+                    if (message.Text is not null
+                        || message.Timestamp is not null
+                        || message.Data is not null
+                        || message.Reason is not null
+                        || HasAttachmentPayload(message))
                     {
                         await CloseConnectionAsync(context, ConnectionClosedReason.ConnectionLost, false, false)
                             .ConfigureAwait(false);
@@ -1496,6 +1529,7 @@ public sealed class ChatSessionManager : IAsyncDisposable
                     .ConfigureAwait(false);
             }
 
+            AbortAttachmentTransfers(context, reason);
             context.Cts.Cancel();
             try
             {
@@ -1749,6 +1783,12 @@ public sealed class ChatSessionManager : IAsyncDisposable
 
         internal SemaphoreSlim SendGate { get; } = new(1, 1);
 
+        internal object AttachmentGate { get; } = new();
+
+        internal OutgoingAttachmentTransfer? OutgoingAttachment;
+
+        internal IncomingAttachmentTransfer? IncomingAttachment;
+
         internal TaskCompletionSource<bool> LoopStart { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -1805,6 +1845,9 @@ public sealed class ChatSessionManager : IAsyncDisposable
 
             Cts.Dispose();
             SendGate.Dispose();
+            IncomingAttachment?.DisposeAndDeletePartial();
+            IncomingAttachment = null;
+            OutgoingAttachment = null;
         }
 
         internal bool IsAuthenticated { get; set; }
